@@ -2,11 +2,11 @@
  * Comprobación de actualizaciones (especificación §8.1). Sólo perfil `normal`:
  * los instaladores fijos (observer/player) no se actualizan solos.
  *
- * Mira la primera release de `Easyhud/easyhud-client` en GitHub. Un 404
+ * Mira la primera release de `Easyhud/easyhud-cliente` en GitHub. Un 404
  * (repositorio privado o sin releases) se registra y se sigue EN SILENCIO.
  */
 
-export const REPO = 'Easyhud/easyhud-client';
+export const REPO = 'Easyhud/easyhud-cliente';
 export const URL_RELEASES = `https://api.github.com/repos/${REPO}/releases`;
 export const URL_ULTIMA = `https://github.com/${REPO}/releases/latest`;
 
