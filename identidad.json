@@ -1,0 +1,10 @@
+{
+  "$comentario": "Identidad de Overwolf. TEMPORAL hasta que Overwolf apruebe Easy HUD. GEP solo entrega eventos a una identidad que reconoce; si cambia cualquier campo, carga un stub 0.0.0 sin avisar. Ver README, seccion 'Identidad de Overwolf'. La guarda scripts/comprueba-identidad.mjs falla el build si esto no coincide con lo aprobado.",
+  "name": "spectra-client",
+  "author": {
+    "name": "Purple Shark UG (haftungsbeschränkt)",
+    "url": "https://www.valospectra.com"
+  },
+  "productName": "Spectra Client",
+  "overwolfPackages": ["gep"]
+}

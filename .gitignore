@@ -1,0 +1,7 @@
+node_modules/
+app/
+dist/
+dist-player/
+overlay-empaquetado/
+.env
+*.log

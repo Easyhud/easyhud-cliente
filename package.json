@@ -1,0 +1,44 @@
+{
+  "name": "spectra-client",
+  "version": "0.3.4",
+  "description": "Easy HUD - overlays de transmision para torneos de VALORANT (easyhud.net)",
+  "private": true,
+  "license": "UNLICENSED",
+  "author": {
+    "name": "Purple Shark UG (haftungsbeschränkt)",
+    "url": "https://www.valospectra.com"
+  },
+  "type": "module",
+  "main": "app/principal/principal.js",
+  "overwolf": {
+    "packages": [
+      "gep"
+    ]
+  },
+  "engines": {
+    "node": ">=22.6"
+  },
+  "scripts": {
+    "start": "node scripts/desarrollo.mjs",
+    "start:player": "node scripts/desarrollo.mjs --auxiliary",
+    "build": "node scripts/construye.mjs normal",
+    "build:observer": "node scripts/construye.mjs observer http://2.24.200.205:5100",
+    "build:player": "node scripts/construye.mjs player http://2.24.200.205:5100",
+    "publish": "node scripts/construye.mjs normal --publicar",
+    "monta": "node scripts/monta-overlay.mjs",
+    "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning --test \"test/**/*.test.ts\"",
+    "test:identidad": "node scripts/comprueba-identidad.mjs",
+    "typecheck": "tsc --noEmit -p .",
+    "postinstall": "ow-electron-builder install-app-deps"
+  },
+  "dependencies": {
+    "socket.io": "4.8.4",
+    "socket.io-client": "4.8.4"
+  },
+  "devDependencies": {
+    "@overwolf/ow-electron": "37.10.3",
+    "@overwolf/ow-electron-builder": "26.0.12",
+    "@types/node": "22.20.4",
+    "typescript": "5.9.3"
+  }
+}
