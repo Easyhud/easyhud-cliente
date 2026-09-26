@@ -289,7 +289,7 @@ async function avisaOverwolfNativo(ctx: Contexto): Promise<void> {
       dialogo(
         ctx,
         'Easy HUD - Failed to stop Overwolf',
-        "Failed to automatically stop Overwolf.\nPlease manually close Overwolf by right-clicking the Overwolf icon in the tray and selecting 'Exit Overwolf'.",
+        "Couldn't close Overwolf for you.\nQuit it yourself from the tray icon (right-click → Exit), then open Easy HUD again.",
         'error',
       );
     }
