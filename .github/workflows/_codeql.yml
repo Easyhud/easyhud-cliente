@@ -1,0 +1,64 @@
+# Workflow reutilizable: análisis de seguridad con CodeQL.
+# En DEV informa; en CERT (gate: true) bloquea si hay hallazgos de nivel "error".
+name: _codeql (reutilizable)
+
+on:
+  workflow_call:
+    inputs:
+      gate:
+        description: "Fallar si CodeQL encuentra hallazgos de nivel error"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  codeql:
+    name: CodeQL${{ inputs.gate && ' (gate)' || '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Iniciar CodeQL
+        uses: github/codeql-action/init@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4.38.1
+        with:
+          languages: javascript-typescript
+          build-mode: none
+          queries: security-extended
+          # Código de terceros o copiado: solo genera ruido.
+          config: |
+            paths-ignore:
+              - overlay-empaquetado/**
+              - original-valospectra/**
+              - "**/vendor/**"
+
+      - name: Analizar
+        uses: github/codeql-action/analyze@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4.38.1
+        with:
+          category: /language:javascript-typescript
+          output: codeql-sarif
+
+      - name: Gate de seguridad
+        if: inputs.gate
+        run: |
+          total=0
+          for f in codeql-sarif/*.sarif; do
+            n=$(jq '[.runs[].results[]? | select(.level == "error")] | length' "$f")
+            total=$((total + n))
+            jq -r '.runs[].results[]? | select(.level == "error") | "- \(.ruleId): \(.locations[0].physicalLocation.artifactLocation.uri):\(.locations[0].physicalLocation.region.startLine)"' "$f"
+          done
+          echo "Hallazgos de nivel error: $total"
+          if [ "$total" -gt 0 ]; then
+            echo "::error::CodeQL encontró $total hallazgo(s) de nivel error. Revisa Security > Code scanning."
+            exit 1
+          fi
