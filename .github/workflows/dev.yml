@@ -1,11 +1,9 @@
-# DEV: revisión en cada pull request y build sin firma al hacer push a develop .
+# DEV: validación y builds sin firma en pull requests hacia develop.
 # version: 1.0.0
 name: DEV
 
 on:
   pull_request:
-    branches: [develop, main]
-  push:
     branches: [develop]
   workflow_dispatch:
 
