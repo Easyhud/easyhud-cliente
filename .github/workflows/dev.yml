@@ -1,4 +1,5 @@
 # DEV: revisión en cada pull request y build sin firma al hacer push a develop .
+# version: 1.0.0
 name: DEV
 
 on:
