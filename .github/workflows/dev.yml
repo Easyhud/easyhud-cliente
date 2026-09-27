@@ -82,6 +82,27 @@ jobs:
           path: overlay
           persist-credentials: false
 
+      - name: Preparar overlay para DEV
+        run: |
+          rm -rf overlay/easy-overlay-valospectra
+          node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+
+          const archivo = 'overlay/compra/index.html';
+          let html = readFileSync(archivo, 'utf8');
+          const logos = [
+            '<img class="equipo__logo" src="./assets/inf-logo.webp" alt="">',
+            '<img class="equipo__logo" src="./assets/prx-logo.png" alt="">',
+          ];
+
+          for (const logo of logos) {
+            if (!html.includes(logo)) throw new Error(`No se encontró la referencia esperada: ${logo}`);
+            html = html.replace(logo, '');
+          }
+
+          writeFileSync(archivo, html);
+          NODE
+
       - name: Node 22
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
