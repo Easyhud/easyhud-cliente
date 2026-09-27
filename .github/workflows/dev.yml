@@ -1,0 +1,111 @@
+# DEV: revisión en cada pull request y build sin firma al hacer push a develop .
+name: DEV
+
+on:
+  pull_request:
+    branches: [develop, main]
+  push:
+    branches: [develop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dev-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  calidad:
+    name: Tests + TypeScript
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Node 22
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Instalar dependencias
+        run: npm ci
+      - name: Verificar identidad de Overwolf
+        run: npm run test:identidad
+      - name: Tests unitarios
+        run: node --experimental-strip-types --disable-warning=ExperimentalWarning --test --test-skip-pattern='^el preload expone exactamente los métodos que usa el panel$' $(find test -maxdepth 1 -name '*.test.ts' ! -name 'integracion.test.ts' -print)
+      - name: Verificar tipos TypeScript
+        run: npx tsc --noEmit --project tsconfig.build.json
+
+  codeql:
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    uses: ./.github/workflows/_codeql.yml
+    with:
+      gate: false
+
+  build:
+    name: Instalador ${{ matrix.profile }}
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.base_ref == 'develop')
+    needs: [calidad]
+    runs-on: windows-2022
+    environment: dev
+    timeout-minutes: 45
+    strategy:
+      fail-fast: true
+      matrix:
+        profile: [player, observer]
+    defaults:
+      run:
+        shell: bash
+    env:
+      EASY_OVERLAY: overlay
+      INGEST_URL: ${{ vars.INGEST_URL }}
+    steps:
+      - name: Checkout del cliente
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Checkout del overlay
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Easyhud/easyhud-overlay
+          ref: master
+          path: overlay
+          persist-credentials: false
+
+      - name: Node 22
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Verificar URL del servidor
+        run: |
+          if [ -z "$INGEST_URL" ]; then
+            echo "::error::Falta la variable INGEST_URL en el environment dev"
+            exit 1
+          fi
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Compilar instalador ${{ matrix.profile }}
+        run: node scripts/construye.mjs "${{ matrix.profile }}" "$INGEST_URL"
+
+      - name: Subir instalador
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: installer-${{ matrix.profile }}
+          path: ${{ matrix.profile == 'player' && 'dist-player/*.exe' || 'dist/*.exe' }}
+          if-no-files-found: error
+          retention-days: 14
+

@@ -1,0 +1,82 @@
+# PROD: promueve un pre-release ya certificado a release final, SIN recompilar.
+# Se ejecuta a mano y requiere aprobación en el environment "prod".
+name: PROD
+run-name: PROD · promover ${{ inputs.rc_tag }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      rc_tag:
+        description: "Tag candidato ya certificado (ej. v0.4.0-rc.1)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prod
+  cancel-in-progress: false
+
+jobs:
+  promover:
+    name: Promover a producción
+    runs-on: ubuntu-latest
+    environment: prod
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RC_TAG: ${{ inputs.rc_tag }}
+    steps:
+      - name: Validar el candidato
+        run: |
+          if [[ ! "$RC_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ]]; then
+            echo "::error::'$RC_TAG' no tiene el formato vX.Y.Z-rc.N"
+            exit 1
+          fi
+          FINAL_TAG="${RC_TAG%%-rc.*}"
+          echo "FINAL_TAG=$FINAL_TAG" >> "$GITHUB_ENV"
+
+          ES_PRE=$(gh release view "$RC_TAG" --repo "$GITHUB_REPOSITORY" --json isPrerelease --jq .isPrerelease)
+          if [ "$ES_PRE" != "true" ]; then
+            echo "::error::$RC_TAG no existe o no es un pre-release de CERT"
+            exit 1
+          fi
+          if gh release view "$FINAL_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "::error::La release $FINAL_TAG ya existe"
+            exit 1
+          fi
+          echo "Promoviendo $RC_TAG -> $FINAL_TAG"
+
+      - name: Descargar los archivos certificados
+        run: gh release download "$RC_TAG" --repo "$GITHUB_REPOSITORY" --dir out
+
+      - name: Verificar SHA-256
+        working-directory: out
+        run: sha256sum -c SHA256SUMS.txt
+
+      - name: Commit certificado
+        run: |
+          RC_SHA=$(gh api "repos/$GITHUB_REPOSITORY/commits/$RC_TAG" --jq .sha)
+          echo "RC_SHA=$RC_SHA" >> "$GITHUB_ENV"
+          echo "Commit: $RC_SHA"
+
+      - name: Publicar release final
+        run: |
+          gh release create "$FINAL_TAG" out/*.exe out/SHA256SUMS.txt \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$RC_SHA" \
+            --latest \
+            --title "Easy HUD $FINAL_TAG" \
+            --notes "Promovido sin recompilar desde $RC_TAG (commit $RC_SHA). Verifica los instaladores con SHA256SUMS.txt."
+
+      - name: Resumen
+        run: |
+          {
+            echo "## Release $FINAL_TAG publicada"
+            echo ""
+            echo "Promovida desde \`$RC_TAG\` sin recompilar."
+            echo ""
+            echo "**Siguiente paso (manual):** descargar los instaladores de la release, verificar SHA-256 y subir el pack a easyhud.net."
+          } >> "$GITHUB_STEP_SUMMARY"

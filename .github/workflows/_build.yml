@@ -1,0 +1,102 @@
+# Workflow reutilizable: compila los dos instaladores (Player y Observer).
+# Lo llaman DEV y CERT. No se ejecuta solo.
+name: _build (reutilizable)
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "Environment de GitHub del que se leen la URL del servidor y los secretos"
+        required: true
+        type: string
+      sign:
+        description: "Firmar con Authenticode si el environment tiene certificado"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build ${{ matrix.profile }} (${{ inputs.environment }})
+    runs-on: windows-2022
+    environment: ${{ inputs.environment }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: true
+      matrix:
+        profile: [player, observer]
+    defaults:
+      run:
+        shell: bash
+    env:
+      INGEST_URL: ${{ vars.INGEST_URL }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Node 22
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+
+      - name: Habilitar corepack (Yarn 4)
+        run: corepack enable
+
+      - name: Verificar URL del servidor
+        run: |
+          if [ -z "$INGEST_URL" ]; then
+            echo "::error::Falta la variable INGEST_URL en el environment '${{ inputs.environment }}'"
+            exit 1
+          fi
+          echo "Servidor para este build: $INGEST_URL"
+
+      - name: Instalar dependencias
+        run: yarn install --immutable
+
+      - name: Fijar perfil de build (${{ matrix.profile }})
+        run: node scripts/set-profile.mjs "${{ matrix.profile }}" "$INGEST_URL"
+
+      - name: Compilar interfaz (Angular)
+        run: yarn workspace angular build
+
+      - name: Compilar proceso principal (TypeScript)
+        run: npx tsc
+
+      - name: Empaquetar instalador
+        env:
+          # Vacíos = instalador sin firma. Solo se usan si inputs.sign es true
+          # y el environment tiene los secretos cargados.
+          CSC_LINK: ${{ inputs.sign && secrets.CSC_LINK || '' }}
+          CSC_KEY_PASSWORD: ${{ inputs.sign && secrets.CSC_KEY_PASSWORD || '' }}
+        run: yarn ow-electron-builder --publish=never -c "electron-builder-${{ matrix.profile }}.json"
+
+      - name: Estado de la firma
+        shell: pwsh
+        env:
+          PIDE_FIRMA: ${{ inputs.sign }}
+          HAY_CERTIFICADO: ${{ secrets.CSC_LINK != '' }}
+        run: |
+          $exe = Get-ChildItem dist -Filter *.exe | Select-Object -First 1
+          if (-not $exe) { Write-Error "No se generó ningún .exe en dist/"; exit 1 }
+          $firma = Get-AuthenticodeSignature $exe.FullName
+          Write-Host "$($exe.Name): firma = $($firma.Status)"
+          if ($env:PIDE_FIRMA -eq 'true' -and $env:HAY_CERTIFICADO -eq 'true' -and $firma.Status -ne 'Valid') {
+            Write-Error "Se pidió firmar pero la firma no es válida."
+            exit 1
+          }
+          if ($env:PIDE_FIRMA -eq 'true' -and $env:HAY_CERTIFICADO -ne 'true') {
+            Write-Host "::warning::Este environment aún no tiene certificado: el instalador sale SIN FIRMA."
+          }
+
+      - name: Subir instalador
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: installer-${{ matrix.profile }}
+          path: dist/*.exe
+          if-no-files-found: error
+          retention-days: 14

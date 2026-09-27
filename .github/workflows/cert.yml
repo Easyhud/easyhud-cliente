@@ -1,0 +1,89 @@
+# CERT: se dispara al crear un tag candidato (ej. v0.4.0-rc.1).
+# CodeQL bloquea, compila firmado y publica un PRE-RELEASE con checksums.
+name: CERT
+
+on:
+  push:
+    tags: ["v*-rc.*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cert-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Validar versión del tag
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: El tag debe coincidir con package.json
+        run: |
+          TAG="$GITHUB_REF_NAME"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$ ]]; then
+            echo "::error::El tag '$TAG' no tiene el formato vX.Y.Z-rc.N"
+            exit 1
+          fi
+          BASE="${TAG#v}"; BASE="${BASE%%-rc.*}"
+          PKG=$(node -p "require('./package.json').version")
+          if [ "$BASE" != "$PKG" ]; then
+            echo "::error::El tag es $BASE pero package.json dice $PKG. Sube la versión en package.json antes de crear el tag."
+            exit 1
+          fi
+          echo "Versión $PKG, candidata $TAG"
+
+  codeql:
+    needs: version
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    uses: ./.github/workflows/_codeql.yml
+    with:
+      gate: true
+
+  build:
+    name: Instaladores (cert)
+    needs: [version, codeql]
+    permissions:
+      contents: read
+    uses: ./.github/workflows/_build.yml
+    with:
+      environment: cert
+      sign: true
+
+  prerelease:
+    name: Publicar pre-release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Descargar instaladores
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: installer-*
+          merge-multiple: true
+          path: out
+
+      - name: Checksums SHA-256
+        working-directory: out
+        run: |
+          sha256sum *.exe > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Crear pre-release
+        run: |
+          gh release create "$GITHUB_REF_NAME" out/*.exe out/SHA256SUMS.txt \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --prerelease \
+            --title "Easy HUD $GITHUB_REF_NAME (candidata)" \
+            --notes "Build certificado desde el commit $GITHUB_SHA. Se promueve a producción con el workflow PROD, sin recompilar."
