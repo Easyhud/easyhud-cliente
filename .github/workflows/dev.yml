@@ -83,7 +83,6 @@ jobs:
 
       - name: Preparar overlay para DEV
         run: |
-          rm -rf overlay/easy-overlay-valospectra
           node --input-type=module <<'NODE'
           import { readFileSync, writeFileSync } from 'node:fs';
 

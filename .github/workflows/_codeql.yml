@@ -39,7 +39,6 @@ jobs:
           config: |
             paths-ignore:
               - overlay-empaquetado/**
-              - original-valospectra/**
               - "**/vendor/**"
 
       - name: Analizar
