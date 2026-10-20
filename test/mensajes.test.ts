@@ -95,9 +95,9 @@ test('perfiles: valores exactos y rol efectivo', () => {
     mode: 'player',
     ingestIp: 'http://2.24.200.205:5100',
     lockConnection: true,
-    forceAutostart: true,
+    forceAutostart: false,
     forceTray: true,
-    startHidden: true,
+    startHidden: false,
   });
   assert.equal(rolEfectivo(perfilPara('normal'), ['x', '--auxiliary']), 'jugador');
   assert.equal(rolEfectivo(perfilPara('normal'), ['x']), 'observador');

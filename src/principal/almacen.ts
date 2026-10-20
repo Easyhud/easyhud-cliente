@@ -30,6 +30,12 @@ export interface FormaClaves {
   matchSecret: { secret?: string; endTime?: number };
   playerId: { playerId?: string };
   matchId: { matchId?: string; timestamp?: number };
+  /** Cámara del jugador: parte del nombre de la webcam a usar (vacío = la predeterminada). */
+  camara: { dispositivo?: string };
+  /** El grupo al que lo llamó el operador: si cierra y abre el programa, vuelve a entrar solo. */
+  grupoJugador: { grupo?: string; desde?: number };
+  /** El jugador ya vio la ventana de bienvenida (la primera vez se abre sola y se queda visible). */
+  bienvenida: { vista?: boolean; version?: string };
 }
 
 /** Nombre de fichero de una clave (estable para claves ASCII). */

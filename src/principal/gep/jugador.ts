@@ -15,9 +15,11 @@
  */
 
 import type { Accion, DatoGep } from './acciones.ts';
-import { analiza, habilidades, informeRonda, marcador, marcadorCompanero, marcadorVacio } from './transforma.ts';
+import { analiza, habilidades, informeRonda, marcador, marcadorCompanero, marcadorVacio, sinNombre } from './transforma.ts';
 
 const REINTENTO_MS = 1500;
+/** Cada cuánto se repiten la vida y las habilidades aunque no cambien: si el servidor pierde la marca de «este jugador manda su vida» (pausa técnica, mapa nuevo, reconexión), se recupera sola. */
+const REPITE_MS = 4000;
 
 /** GEP manda los booleanos a veces como texto. */
 const verdadero = (v: unknown): boolean => v === true || v === 'true';
@@ -25,7 +27,21 @@ const verdadero = (v: unknown): boolean => v === true || v === 'true';
 type Companero = ReturnType<typeof marcadorCompanero>;
 
 export class TraductorJugador {
+  /**
+   * «Soy espectador»: no se manda vida ni habilidades. Sólo lo marcan las señales de GEP que llegan ESTANDO
+   * en una partida (`team: observer`, `observing`). Con la escena en el menú NO se les hace caso: al detectar
+   * VALORANT, Overwolf repite el último estado de la partida anterior (también su `observing`, p. ej. de
+   * cuando murió y miró a un compañero), y hacerle caso dejaba al jugador marcado como espectador toda la
+   * partida nueva: sin un solo dato de vida ni de habilidades.
+   */
   soyEspectador = false;
+  /** La escena actual de GEP (`MainMenu`, la selección de agentes, el mapa…). */
+  private escena = '';
+
+  /** GEP dice que estamos en el menú (o aún no ha dicho nada): ahí no hay datos de partida que valgan. */
+  get enMenu(): boolean {
+    return this.escena === '' || this.escena === 'MainMenu';
+  }
   puuid = '';
   nombre = '';
   matchId = '';
@@ -33,6 +49,9 @@ export class TraductorJugador {
   private custom = false;
   private vida: number | undefined;
   private vidaEnviada: number | undefined;
+  /** Lo último que se mandó de habilidades y cuándo se repitió cada cosa (para repetirlo cada pocos segundos). */
+  private ultimasHabilidades: ReturnType<typeof habilidades> | undefined;
+  private repetidoEn = 0;
   private readonly companeros = new Map<string, Companero>();
   private companerosCambiados = false;
 
@@ -58,7 +77,9 @@ export class TraductorJugador {
       case 'abilities': {
         if (this.soyEspectador) return [];
         const g = analiza(value);
-        return g ? [{ tipo: 'envia', type: 'aux_abilities', data: habilidades(g), reintentoMs: REINTENTO_MS }] : [];
+        if (!g) return [];
+        this.ultimasHabilidades = habilidades(g);
+        return [{ tipo: 'envia', type: 'aux_abilities', data: this.ultimasHabilidades, reintentoMs: REINTENTO_MS }];
       }
       case 'round_report': {
         if (this.soyEspectador) return [];
@@ -96,13 +117,15 @@ export class TraductorJugador {
         return [];
       }
       case 'scene':
-        if (value === 'MainMenu') this.soyEspectador = false;
+        if (value !== null && value !== undefined) this.escena = String(value);
+        // Cada escena nueva (menú, selección, mapa) empieza sin la marca: si de verdad es espectador, GEP lo repite DENTRO de la partida.
+        this.soyEspectador = false;
         return [];
       case 'team':
-        if (value === 'observer') this.soyEspectador = true;
+        if (value === 'observer' && this.escena !== 'MainMenu') this.soyEspectador = true;
         return [];
       case 'observing':
-        this.soyEspectador = true;
+        if (this.escena !== 'MainMenu') this.soyEspectador = true;
         return [];
       case 'player_id':
         if (typeof value !== 'string' || value === '') return [];
@@ -122,7 +145,7 @@ export class TraductorJugador {
   private marcador(value: unknown): Accion[] {
     if (marcadorVacio(value)) return [];
     const g = analiza(value);
-    if (!g || g.name === undefined) return [];
+    if (!g || sinNombre(g.name)) return [];
     if (verdadero(g.is_local)) {
       const m = marcador(g);
       const acciones: Accion[] = [];
@@ -145,11 +168,16 @@ export class TraductorJugador {
   }
 
   /** Lo que toca mandar en esta vuelta del bucle de 300 ms. */
-  tick(): Accion[] {
+  tick(ahora: number = Date.now()): Accion[] {
     const acciones: Accion[] = [];
-    if (this.vida !== undefined && this.vida !== this.vidaEnviada) {
+    const repite = !this.soyEspectador && ahora - this.repetidoEn >= REPITE_MS;
+    if (this.vida !== undefined && (this.vida !== this.vidaEnviada || repite)) {
       this.vidaEnviada = this.vida;
       acciones.push({ tipo: 'envia', type: 'aux_health', data: this.vida });
+    }
+    if (repite) {
+      this.repetidoEn = ahora;
+      if (this.ultimasHabilidades !== undefined) acciones.push({ tipo: 'envia', type: 'aux_abilities', data: this.ultimasHabilidades });
     }
     if (this.companerosCambiados) {
       // El servidor espera aquí una cadena JSON dentro del paquete (§3.3).
@@ -158,6 +186,21 @@ export class TraductorJugador {
       this.companerosCambiados = false;
     }
     return acciones;
+  }
+
+  /**
+   * VALORANT se cerró: se olvida todo lo de la partida (espectador, vida, compañeros), para que al abrirlo
+   * de nuevo el jugador empiece limpio y no arrastre el estado de antes.
+   */
+  reiniciaJuego(): void {
+    this.soyEspectador = false;
+    this.escena = '';
+    this.vida = undefined;
+    this.vidaEnviada = undefined;
+    this.ultimasHabilidades = undefined;
+    this.matchId = '';
+    this.companeros.clear();
+    this.companerosCambiados = false;
   }
 
   /** Al marcar desconectado: se olvida la vida enviada y el almacén de compañeros. */

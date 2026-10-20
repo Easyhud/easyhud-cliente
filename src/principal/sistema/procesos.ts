@@ -91,6 +91,18 @@ export async function procesosDe(nombreExe: string): Promise<Proceso[]> {
   }
 }
 
+/** TODOS los procesos (sólo Windows). Más pesado que `procesosDe`: se usa pocas veces. */
+export async function todosLosProcesos(): Promise<Proceso[]> {
+  if (process.platform !== 'win32') return [];
+  const orden =
+    'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,ExecutablePath,CommandLine | ConvertTo-Json -Compress';
+  try {
+    return leeListaProcesos(await ejecuta('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', orden], 25_000));
+  } catch {
+    return [];
+  }
+}
+
 /** Restos de una ejecución anterior de Easy HUD (mismo exe y rol). */
 export async function buscaRestos(yo: Yo): Promise<Proceso[]> {
   return restosDe(await procesosDe(basename(yo.ejecutable)), yo);

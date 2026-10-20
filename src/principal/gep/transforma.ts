@@ -30,6 +30,15 @@ export function partirNombre(completo: unknown): { name: string; tagline: string
   return { name: texto.slice(0, i), tagline: texto.slice(i + 2) };
 }
 
+/**
+ * ¿El nombre falta, está vacío o sólo trae espacios (o sólo la etiqueta `#TAG`)? Un marcador o roster así no
+ * identifica a nadie: se descarta igual que uno sin nombre, para que no llegue a la serie ni al servidor.
+ */
+export function sinNombre(nombre: unknown): boolean {
+  if (nombre === undefined || nombre === null) return true;
+  return partirNombre(nombre).name.trim() === '';
+}
+
 /** Un marcador que no trae datos: GEP manda `open`/`closed`/`close` al abrir/cerrar la tabla. */
 export function marcadorVacio(valor: unknown): boolean {
   return valor === null || valor === undefined || valor === 'open' || valor === 'closed' || valor === 'close';

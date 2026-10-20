@@ -9,7 +9,7 @@
  * pueda llevarlo usa `recorta()`.
  */
 
-import { appendFileSync, existsSync, mkdirSync, renameSync, statSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readSync, renameSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 const TOPE_BYTES = 2 * 1024 * 1024;
@@ -47,6 +47,25 @@ function escribe(nivel: string, texto: string): void {
     appendFileSync(fichero, linea);
   } catch {
     // El log nunca debe tumbar el programa.
+  }
+}
+
+/** Las últimas `n` líneas del log (para el informe completo). Nunca falla. */
+export function colaDelLog(n = 150): string[] {
+  if (fichero === null) return [];
+  try {
+    const tam = statSync(fichero).size;
+    const leer = Math.min(tam, 96 * 1024);
+    const fd = openSync(fichero, 'r');
+    try {
+      const buf = Buffer.alloc(leer);
+      readSync(fd, buf, 0, leer, tam - leer);
+      return buf.toString('utf8').split(/\r?\n/).filter((l) => l !== '').slice(-n);
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return [];
   }
 }
 

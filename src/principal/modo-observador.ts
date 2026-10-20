@@ -22,6 +22,7 @@ import { TraductorObservador } from './gep/observador.ts';
 import { ServidorLocal } from './local/servidor-local.ts';
 import { recorta, error, log } from './registro.ts';
 import { ResolutorRiot } from './riot/contexto.ts';
+import { Colocador, leeColocacion } from './riot/coloca.ts';
 import { creaSalaTorneo, type ResultadoSala } from './riot/crea-sala.ts';
 import { Rangos } from './riot/rango.ts';
 import { LectorSala } from './riot/sala.ts';
@@ -29,6 +30,14 @@ import { raizOverlay } from './rutas.ts';
 import { INGESTA_POR_DEFECTO } from './perfil.ts';
 import { derivaSalida, normalizaIngesta } from './urls.ts';
 import { VentanaOperador } from './ventanas.ts';
+import { DetectorPausa } from './sistema/detector-pausa.ts';
+import { CapturaFlujo } from './sistema/captura-flujo.ts';
+
+/** Lecturas seguidas sin sala (a 1 s cada una) antes de decirle al servidor que ya no hay sala. */
+const LECTURAS_SIN_SALA = 4;
+
+/** Espera antes de reabrir la conexión tras un fin de partida. */
+const RECONEXION_TRAS_FIN_MS = 2500;
 
 export class ModoObservador {
   readonly riot = new ResolutorRiot();
@@ -37,11 +46,17 @@ export class ModoObservador {
   readonly enlace: EnlaceIngesta;
   readonly local: ServidorLocal;
   readonly lector: LectorSala;
+  /** Pone a cada jugador en su lado de la sala de Riot (lo pide el panel). */
+  readonly colocador: Colocador;
   readonly operador: VentanaOperador;
   private readonly ctx: Contexto;
   /** Token y grupo del shell: sólo en memoria, para la reconexión automática. */
   private sesion: { token: string; grupo: string } | null = null;
+  /** Reconexión pendiente tras acabar una partida (ver `reconectaTrasFin`). */
+  private relojReconexion: ReturnType<typeof setTimeout> | null = null;
   private plan: PlanAtajos | null = null;
+  private lecturasSinSala = 0;
+  private salaOlvidada = false;
   private atajosActivos: string[] = [];
 
   constructor(ctx: Contexto) {
@@ -63,6 +78,11 @@ export class ModoObservador {
         desconectado: () => this.desactivaAtajos(),
       },
     });
+    this.colocador = new Colocador({
+      riot: this.riot,
+      puuidPropio: async () => (await this.riot.contexto())?.puuid ?? '',
+      log,
+    });
     this.local = new ServidorLocal({ raiz: raizOverlay(ctx.empaquetado), puerto: ctx.puertoLocal, log });
     this.lector = new LectorSala({
       riot: this.riot,
@@ -70,12 +90,35 @@ export class ModoObservador {
       pideRango: (p) => void this.rangos.resuelve(p),
       entrega: (sala) => {
         enviaAlPanel(ctx, CANALES.salaLocal, sala);
-        if (sala !== null) this.enlace.enviaSala(sala);
+        if (sala !== null) {
+          this.lecturasSinSala = 0;
+          this.salaOlvidada = false;
+          this.enlace.enviaSala(sala);
+        } else if (!this.salaOlvidada && ++this.lecturasSinSala >= LECTURAS_SIN_SALA) {
+          // Varias lecturas seguidas sin sala (no un tropiezo de la API): se le dice al servidor que ya no hay.
+          this.salaOlvidada = this.enlace.enviaSala(null) || this.salaOlvidada;
+        }
+        void this.colocador.aplica(sala);
       },
       log,
     });
     this.operador = new VentanaOperador(() => `http://localhost:${this.local.puerto || ctx.puertoLocal}/operador/`);
+    // El juego se pone en gris en cada timeout / pausa técnica: se detecta mirando la pantalla (5 veces por segundo).
+    if (process.env.EASY_SIN_PAUSA_VISUAL !== '1') {
+      const detector = new DetectorPausa({
+        captura: async () => null, // las medidas llegan del flujo de vídeo, no se piden
+        alCambiar: (activa) => enviaAlPanel(ctx, CANALES.pausaVisual, { activa }),
+        log,
+      });
+      this.pausaVisual = detector;
+      this.flujoPausa = new CapturaFlujo((m) => detector.procesa(m), log);
+      // Sólo para comprobar el detector sin partida: mide siempre, no sólo en la compra.
+      if (process.env.EASY_PAUSA_SIEMPRE === '1') void this.flujoPausa.arranca();
+    }
   }
+
+  private pausaVisual: DetectorPausa | null = null;
+  private flujoPausa: CapturaFlujo | null = null;
 
   private get urlIngesta(): string {
     return normalizaIngesta(this.ctx.ingesta ?? INGESTA_POR_DEFECTO);
@@ -88,11 +131,33 @@ export class ModoObservador {
   /* ── GEP ────────────────────────────────────────────────────────────────── */
 
   info(dato: DatoGep): void {
+    this.siguePausa(dato);
     this.ejecuta(this.traductor.info(dato));
   }
 
   evento(dato: DatoGep): void {
+    this.siguePausa(dato);
     this.ejecuta(this.traductor.evento(dato));
+  }
+
+  /** Sucesos del propio GEP: el juego detectado abre la ráfaga en la que se ignora el estado viejo repetido. */
+  sucesoGep(tipo: string): void {
+    if (tipo === 'game-detected') this.traductor.juegoDetectado();
+    else if (tipo === 'game-exit') this.traductor.juegoCerrado();
+  }
+
+  /**
+   * Los tiempos muertos y la pausa técnica SÓLO se piden en la fase de compra: el detector de pantalla sólo mira
+   * entonces (así no gasta CPU el resto de la ronda y no puede confundirse con nada de otra fase).
+   */
+  private siguePausa(dato: DatoGep): void {
+    if (dato.key !== 'round_phase' || this.pausaVisual === null || this.flujoPausa === null) return;
+    if (dato.value === 'shopping') {
+      void this.flujoPausa.arranca();
+    } else {
+      this.flujoPausa.para();
+      this.pausaVisual.para();
+    }
   }
 
   private ejecuta(acciones: Accion[]): void {
@@ -112,6 +177,7 @@ export class ModoObservador {
           break;
         case 'finConexion':
           this.enlace.cierra('Connection Closed');
+          this.reconectaTrasFin();
           break;
         case 'conecta':
           this.disparaConexion();
@@ -143,9 +209,30 @@ export class ModoObservador {
       log('conecta sin token o sin grupo: no se conecta');
       return;
     }
+    const igual = this.sesion?.token === token && this.sesion.grupo === grupo;
     this.sesion = { token, grupo };
+    // El panel lo pide al arrancar un match o crear la sala: con la conexión ya viva (o en camino) con
+    // esta misma sesión no se toca (reabrirla tiraría el partido que hay en el servidor).
+    if (igual && (this.enlace.autenticado || this.enlace.abierto)) return;
     log(`conecta: grupo ${grupo.toUpperCase()}, token ${recorta(token)}`);
     this.enlace.abre(this.urlIngesta, { rol: 'observador', token, grupo });
+  }
+
+  /**
+   * Acabada una partida se cierra la conexión (el servidor da el partido por terminado), pero el
+   * panel sigue trabajando: Quick match, Call players, crear la sala… necesitan un observador
+   * conectado. Sin esto la conexión no volvía hasta la siguiente selección de agentes y, entre
+   * partidas, el panel se quedaba sin equipos, sin sala y con «No conectado como observador».
+   * Se espera un poco: GEP a veces repite el fin de mapa y cada uno reinicia la cuenta.
+   */
+  private reconectaTrasFin(): void {
+    if (this.relojReconexion !== null) clearTimeout(this.relojReconexion);
+    this.relojReconexion = setTimeout(() => {
+      this.relojReconexion = null;
+      if (this.sesion === null || this.enlace.abierto) return;
+      log('reconexión tras el fin de la partida: el panel sigue necesitando un observador conectado');
+      this.enlace.abre(this.urlIngesta, { rol: 'observador', ...this.sesion });
+    }, RECONEXION_TRAS_FIN_MS);
   }
 
   /** Disparo automático (escena de selección de agentes, §3.1.3). */
@@ -171,6 +258,11 @@ export class ModoObservador {
 
   creaSala(): Promise<ResultadoSala> {
     return creaSalaTorneo(this.riot);
+  }
+
+  /** El panel dice quién va en qué lado; el colocador mueve a quien esté en el lado equivocado. */
+  colocaJugadores(carga: unknown): void {
+    this.colocador.fija(leeColocacion(carga));
   }
 
   llamaJugadores(puuids: unknown) {
@@ -227,6 +319,8 @@ export class ModoObservador {
   }
 
   async apaga(): Promise<void> {
+    this.flujoPausa?.destruye();
+    this.pausaVisual?.para();
     this.lector.para();
     this.desactivaAtajos();
     this.operador.destruye();

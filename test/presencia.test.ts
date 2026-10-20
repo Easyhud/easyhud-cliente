@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Server } from 'socket.io';
 import { Presencia } from '../src/principal/enlace/presencia.ts';
-import { FuentePuuid, leePuuidLocal } from '../src/principal/riot/puuid-local.ts';
+import { FuentePuuid, leePuuidLocal, leeRiotIdLocal } from '../src/principal/riot/puuid-local.ts';
 
 const carpetas: string[] = [];
 const cerrar: Array<() => unknown> = [];
@@ -132,4 +132,59 @@ test('la presencia late con el puuid de Riot en el menú, sin ningún dato de GE
 
   await Promise.race([primero, new Promise((_, no) => setTimeout(() => no(new Error('sin latido')), 5000).unref())]);
   assert.equal(latidos[0], 'puuid-menu');
+});
+
+test('leeRiotIdLocal: el Nombre#TAG de la sesión del cliente de Riot', async () => {
+  const s = createServer((req, res) => {
+    if (req.url !== '/chat/v1/session') {
+      res.statusCode = 404;
+      res.end();
+      return;
+    }
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify({ game_name: 'Nick Name', game_tag: 'EUW', puuid: 'x' }));
+  });
+  const puerto = await escucha(s);
+  cerrar.push(() => new Promise((r) => s.close(r)));
+  const appData = mkdtempSync(join(tmpdir(), 'easyhud-riot-'));
+  carpetas.push(appData);
+  const config = join(appData, 'Riot Games', 'Riot Client', 'Config');
+  mkdirSync(config, { recursive: true });
+  writeFileSync(join(config, 'lockfile'), `Riot Client:1234:${puerto}:clave:http`);
+  assert.equal(await leeRiotIdLocal(appData), 'Nick Name#EUW');
+
+  // Sin cliente de Riot, o sin sesión iniciada: vacío.
+  const vacia = mkdtempSync(join(tmpdir(), 'easyhud-riot-'));
+  carpetas.push(vacia);
+  assert.equal(await leeRiotIdLocal(vacia), '');
+  assert.equal(await leeRiotIdLocal(''), '');
+});
+
+test('la presencia vuelve sola cuando el servidor cierra la conexión (reinicio)', async () => {
+  const http = createServer();
+  const io = new Server(http);
+  const puerto = await escucha(http);
+  cerrar.push(() => new Promise((r) => io.close(() => r(undefined))));
+  let latidos = 0;
+  io.on('connection', (s) => s.on('cliente_presente', () => (latidos += 1)));
+
+  const presencia = new Presencia({
+    url: `http://127.0.0.1:${puerto}`,
+    puuid: () => 'puuid-reinicio',
+    alLlamar: () => undefined,
+    log: () => undefined,
+    periodoMs: 60_000,
+    reintentoMs: 50,
+  });
+  presencia.arranca();
+  cerrar.push(() => presencia.para());
+  const espera = async (cond: () => boolean) => {
+    for (let i = 0; i < 100 && !cond(); i++) await new Promise((r) => setTimeout(r, 50));
+    assert.ok(cond(), 'no llegó a tiempo');
+  };
+  await espera(() => latidos >= 1);
+
+  // El servidor echa a todos, como al reiniciarse: el cliente tiene que volver y latir otra vez.
+  io.disconnectSockets(true);
+  await espera(() => latidos >= 2);
 });

@@ -34,6 +34,12 @@ const equipos = db('teams');
 const matches = db('matches');
 const torneos = db('tournaments');
 
+// El panel toma de aquí el servidor de datos si se fijó uno (sólo desarrollo; vacío en producción).
+const endpointDatos = ipcRenderer.sendSync('get-endpoint-datos');
+if (typeof endpointDatos === 'string' && /^https?:\/\//.test(endpointDatos)) {
+  contextBridge.exposeInMainWorld('EASY_ENDPOINT', endpointDatos);
+}
+
 contextBridge.exposeInMainWorld('electronAPI', {
   getBuildProfile: () => ipcRenderer.sendSync('get-build-profile'),
   getObsUrl: () => ipcRenderer.sendSync('get-obs-url'),
@@ -51,9 +57,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
       return typeof m === 'string' ? m : '';
     }),
   onSerieFin: (cb: Callback<unknown>) => suscribe('serie-mapa-fin', cb),
+  onPausaVisual: (cb: Callback<unknown>) => suscribe('pausa-visual', cb),
 
   creaSalaTorneo: () => ipcRenderer.invoke('crea-sala'),
   llamaJugadores: (puuids: unknown) => ipcRenderer.invoke('llamar-jugadores', puuids ?? []),
+  colocaJugadores: (lista: unknown) => ipcRenderer.send('coloca-jugadores', lista ?? []),
 
   dbTeamsList: equipos.list,
   dbTeamsCreate: equipos.create,

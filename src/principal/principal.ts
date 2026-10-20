@@ -15,13 +15,15 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseEnv } from 'node:util';
-import { app, BrowserWindow, dialog, globalShortcut, Menu, shell } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, globalShortcut, Menu, Notification, shell } from 'electron';
 import { Almacen } from './almacen.ts';
 import { Bandeja } from './bandeja.ts';
 import { creaColecciones } from './coleccion.ts';
 import { dialogo, estadoPrograma, type Contexto } from './contexto.ts';
 import { iniciaGep, type EstadoGep } from './gep/adaptador.ts';
 import { registraIpc } from './ipc.ts';
+import { registraIpcJugador } from './jugador-ipc.ts';
+import { registraIpcCamara } from './camara/ipc.ts';
 import { ModoJugador } from './modo-jugador.ts';
 import { ModoObservador } from './modo-observador.ts';
 import { cargaPerfil, INGESTA_POR_DEFECTO, rolEfectivo } from './perfil.ts';
@@ -158,6 +160,12 @@ function arranca(): void {
   const sal = () => {
     saliendo = true;
     app.quit();
+    /* Red de seguridad: si algo se queda colgado cerrando (Overwolf, una ventana), a los pocos segundos se
+       termina el proceso a la fuerza. «Salir» tiene que salir siempre, sin dejar el programa a medias. */
+    setTimeout(() => {
+      log('el programa no terminó de cerrar a tiempo: se fuerza la salida');
+      app.exit(0);
+    }, 5000).unref();
   };
   const muestra = () => {
     if (principal === null || principal.isDestroyed()) return;
@@ -165,7 +173,32 @@ function arranca(): void {
     principal.show();
     principal.focus();
   };
-  const bandeja = new Bandeja(rutaIcono(app.isPackaged), muestra, sal);
+  const bandeja: Bandeja = new Bandeja(rutaIcono(app.isPackaged), muestra, sal, () =>
+    jugador
+      ? [
+          {
+            label: 'Camera (visible on the broadcast)',
+            type: 'checkbox',
+            checked: jugador.camaraActiva,
+            click: () => {
+              jugador.alternaCamara();
+              bandeja.actualizaMenu();
+            },
+          },
+          { type: 'separator' },
+          { label: 'Show status', click: () => muestra() },
+          {
+            label: 'Copy diagnostics',
+            click: () => {
+              clipboard.writeText(jugador.textoDiagnostico());
+              log('diagnóstico copiado al portapapeles desde la bandeja');
+            },
+          },
+          { label: 'Open log folder', click: () => void shell.openPath(join(datos.carpeta, 'logs')) },
+          { type: 'separator' },
+        ]
+      : [],
+  );
   /** Reinicia la app entera (la instancia nueva espera a que ésta suelte el candado). */
   const reinicia = () => {
     log('reinicio de Easy HUD pedido por el usuario');
@@ -205,11 +238,18 @@ function arranca(): void {
   });
 
   app.on('window-all-closed', () => {
+    log('todas las ventanas cerradas: se sale');
     if (process.platform !== 'darwin') app.quit();
+  });
+
+  // Cualquier salida pedida (Quit, reinicio, apagado de Windows) debe poder cerrar la ventana que se esconde al cerrarla.
+  app.on('before-quit', () => {
+    saliendo = true;
   });
 
   let gep: EstadoGep | null = null;
   app.on('will-quit', () => {
+    log('saliendo (will-quit)');
     gep?.para();
     globalShortcut.unregisterAll();
     void observador?.apaga();
@@ -224,6 +264,10 @@ function arranca(): void {
       inicio.startMinimized = perfil.startHidden;
       inicio.aux = perfil.mode === 'player';
     }
+    /* El programa del jugador NO se abre solo al encender el equipo: se ejecuta cuando el jugador lo abre. Y se
+       desregistra el inicio automático que dejaron las versiones anteriores (se hace en cada arranque: si
+       ya no está registrado no pasa nada, y si lo estaba se borra). */
+    if (rol === 'jugador') inicio.enabled = false;
     if (!desarrollo) {
       app.setLoginItemSettings({
         openAtLogin: inicio.enabled === true,
@@ -261,13 +305,74 @@ function arranca(): void {
     } else {
       const v = creaVentanaJugador();
       principal = v;
-      if (!perfil.startHidden) v.once('ready-to-show', () => v.show());
+      /* La ventana se ABRE y se queda visible la primera vez que el jugador abre el programa (y cada vez que
+         lo abre a mano): así ve quién es, qué hace el programa y que está todo bien. Sólo se esconde cuando
+         lo lanza Windows al iniciar sesión, y siempre queda en la bandeja. */
+      const alIniciarSesion = app.getLoginItemSettings().wasOpenedAtLogin === true || process.argv.includes('--auxiliary');
+      const primeraVez = almacen.lee('bienvenida').vista !== true;
+      v.once('ready-to-show', () => {
+        if (primeraVez || !alIniciarSesion) {
+          v.show();
+          v.focus();
+        }
+        if (primeraVez) void almacen.escribe('bienvenida', { vista: true, version }).catch(() => undefined);
+      });
+      // Si la ventana se cuelga o se cae, se recarga sola en vez de dejarse en blanco.
+      v.webContents.on('render-process-gone', (_e, d) => {
+        log(`ventana del jugador: el proceso de render murió (${d.reason}); se recarga`);
+        if (!v.isDestroyed()) setTimeout(() => v.reload(), 1000);
+      });
       bandeja.asegura();
       v.on('minimize', () => {
         if (bandeja.existe) v.hide();
       });
+      /* Cerrar la ventana NO cierra el programa: se esconde y sigue en la bandeja (es lo que se le dice al
+         jugador). Antes cerrarla lo terminaba, y el jugador desaparecía de la transmisión sin enterarse.
+         Sólo «Quit» de la bandeja sale de verdad. Sin bandeja (no se pudo crear) se deja cerrar. */
+      v.on('close', (e) => {
+        if (saliendo || !bandeja.existe) return;
+        e.preventDefault();
+        v.hide();
+        log('ventana del jugador cerrada: el programa sigue en la bandeja');
+      });
     }
     registraIpc(ctx, creaColecciones(almacen), observador, { cerrar: (v) => v.close() });
+    if (jugador) {
+      registraIpcCamara(jugador, almacen, () => bandeja.actualizaMenu());
+      registraIpcJugador(jugador, join(datos.carpeta, 'logs'), sal);
+      /* Avisos al jugador: nada falla en silencio. Notificación del sistema para lo nuevo, y el icono de
+         la bandeja dice de un vistazo si hay algo roto. */
+      jugador.fijaAvisos({
+        ofreceFirewall: (motivo) => {
+          void dialog
+            .showMessageBox({
+              type: 'question',
+              title: 'Easy HUD - Network access',
+              message: "Easy HUD can't reach the broadcast server.",
+              detail:
+                `${motivo}\n\nThis is often caused by the Windows Firewall or an antivirus. ` +
+                'Allow Easy HUD through the Windows Firewall? Windows will ask for your permission. ' +
+                'The rule applies only to the Easy HUD program.',
+              buttons: ['Allow', 'Not now'],
+              defaultId: 0,
+              cancelId: 1,
+            })
+            .then(async ({ response }) => {
+              if (response !== 0) return;
+              const r = await jugador.permiteFirewall();
+              dialogo(ctx, 'Easy HUD - Network access', r.ok ? 'Done. Easy HUD is allowed through the Windows Firewall.' : `It was not changed: ${r.motivo}.`, r.ok ? 'info' : 'warning');
+            });
+        },
+        notifica: (a) => {
+          if (!Notification.isSupported()) return;
+          const n = new Notification({ title: `Easy HUD — ${a.titulo}`, body: a.detalle, urgency: a.nivel === 'error' ? 'critical' : 'normal' });
+          n.on('click', () => muestra());
+          n.show();
+        },
+        alCambiar: (alertas) =>
+          bandeja.fijaTooltip(alertas.length === 0 ? 'Easy HUD — all good' : `Easy HUD — ${alertas[0].nivel === 'error' ? 'PROBLEM' : 'warning'}: ${alertas[0].titulo}`),
+      });
+    }
 
     /* 4.4 Atajo de la ventana operador. */
     if (observador && !globalShortcut.register('Control+Alt+O', () => observador.operador.alterna())) {
@@ -310,8 +415,9 @@ function arranca(): void {
       sinListo: (motivo, intento) => {
         if (intento % 2 === 1) void recuperaGep(motivo);
       },
-      info: (d) => (observador ? observador.info(d) : jugador?.procesa(d)),
-      evento: (d) => (observador ? observador.evento(d) : jugador?.procesa(d)),
+      info: (d) => (observador ? observador.info(d) : jugador?.procesa(d, 'info')),
+      evento: (d) => (observador ? observador.evento(d) : jugador?.procesa(d, 'evento')),
+      suceso: (tipo, detalle) => (observador ? observador.sucesoGep(tipo) : jugador?.sucesoGep(tipo, detalle)),
       versionIncompatible: (v) =>
         dialogo(
           ctx,
@@ -322,6 +428,8 @@ function arranca(): void {
       log,
       error,
     });
+
+    jugador?.enlazaGep(gep);
 
     /* 4.6 Actualizaciones (sólo perfil normal). */
     if (perfil.mode === 'normal' && (await hayQueActualizar(ctx))) {

@@ -51,6 +51,7 @@ before(async () => {
     extraProrroga: 1,
     minutosInactividad: 30,
     puertos: { ingesta: 0, salida: 0, extras: 0 },
+    camaras: { base: 'https://vdo.ninja', params: '' },
   };
   servidor = await arranca(config);
 });
@@ -130,6 +131,7 @@ function enlace(testigo: Testigo, secreto = () => '') {
     avisos: testigo,
     secreto,
     opcionesSocket: { reconnectionDelay: 50, reconnectionDelayMax: 100 },
+    reintentoCierreMs: 50,
   });
   cerrar.push(() => e.cierra());
   return e;
@@ -229,6 +231,8 @@ test('jugador: presencia → Call players → te_llaman → logon por grupo y au
       url: urlIngesta(),
       puuid: () => 'puuid-jugador',
       alLlamar: (g) => {
+        // El servidor sigue llamando en cada latido hasta que el jugador entra: los repetidos se ignoran.
+        if (jugador.abierto) return;
         jugador.abre(urlIngesta(), { rol: 'jugador', nombre: 'Jugador Uno', puuid: 'puuid-jugador', grupo: g });
         resolve(g);
       },
@@ -287,4 +291,18 @@ test('servidor inalcanzable: "Server Unreachable" y un solo diálogo', async () 
   await new Promise((s) => setTimeout(s, 300));
   assert.equal(testigo.dialogos.filter((d) => d.includes('not reachable')).length, 1);
   e.cierra();
+});
+
+test('observador: si el servidor lo cierra (reinicio, partido caducado) vuelve a entrar solo', async () => {
+  const grupo = 'INTEG9';
+  const { e, testigo } = await observador(grupo);
+  assert.equal(e.autenticado, true);
+
+  // El servidor echa al observador (como al reiniciarse): socket.io no reconecta solo en ese caso.
+  const reacuse = testigo.siguienteAcuse();
+  servidor.central.destruye(grupo, 'prueba');
+  const info = await reacuse;
+  assert.equal(info.rol, 'observador');
+  assert.equal(e.autenticado, true, 'volvió a entrar sin pulsar Reconnect');
+  assert.ok(testigo.estados.includes('Reconnecting'));
 });

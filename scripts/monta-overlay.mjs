@@ -148,6 +148,9 @@ export function montaTodo({ version, origen, salida = join(PROYECTO, 'app'), emp
   const jugador = join(PROYECTO, 'recursos', 'jugador.html');
   if (!existsSync(jugador)) falla('falta recursos/jugador.html');
   cpSync(jugador, join(renderer, 'jugador.html'));
+  const captura = join(PROYECTO, 'recursos', 'captura.html');
+  if (!existsSync(captura)) falla('falta recursos/captura.html');
+  cpSync(captura, join(renderer, 'captura.html'));
   rmSync(join(renderer, 'panel', 'README.md'), { force: true });
 
   const ahora = new Date().toISOString();

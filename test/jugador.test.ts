@@ -72,6 +72,31 @@ test('habilidades y round_report con reintento; nada si soy espectador', () => {
   assert.equal(t.soyEspectador, false);
 });
 
+test('el estado viejo que Overwolf repite en el menú (observing / team observer) NO deja al jugador como espectador', () => {
+  const t = new TraductorJugador('mio');
+  t.procesa({ key: 'scene', value: 'MainMenu' }); // Overwolf dice primero que estamos en el menú…
+  t.procesa({ key: 'observing', value: 'Algun Amigo #EUW' }); // …y repite lo último de la partida anterior
+  t.procesa({ key: 'team', value: 'observer' });
+  assert.equal(t.soyEspectador, false, 'en el menú no se hace caso');
+
+  // La partida nueva: vida y habilidades salen con normalidad.
+  t.procesa({ key: 'scene', value: 'CharacterSelectPersistentLevel' });
+  t.procesa({ key: 'health', value: 100 });
+  assert.equal(envios(t.tick())[0]?.type, 'aux_health');
+  const hab = t.procesa({ key: 'abilities', value: JSON.stringify({ grenade: 1, ability_1: 1, ability_2: 1, ultimate: 0 }) });
+  assert.equal(envios(hab)[0]?.type, 'aux_abilities');
+});
+
+test('espectador de verdad (señal DENTRO de la partida): no manda nada; una escena nueva lo suelta', () => {
+  const t = new TraductorJugador('mio');
+  t.procesa({ key: 'scene', value: 'Ascent' });
+  t.procesa({ key: 'team', value: 'observer' });
+  assert.equal(t.soyEspectador, true);
+  assert.deepEqual(envios(t.procesa({ key: 'abilities', value: JSON.stringify({ grenade: 1 }) })), []);
+  t.procesa({ key: 'scene', value: 'MainMenu' });
+  assert.equal(t.soyEspectador, false);
+});
+
 test('agentes: Astra (Rift) y Cypher (Gumshoe)', () => {
   const t = new TraductorJugador();
   assert.deepEqual(envios(t.procesa({ key: 'agent', value: 'Rift_Targeting' })), [{ type: 'aux_astra_targeting', data: true }]);
@@ -107,4 +132,39 @@ test('nombre y matchId se recuerdan; el roster se ignora', () => {
   assert.equal(t.nombre, 'Yo');
   assert.equal(t.matchId, 'm-2');
   assert.deepEqual(t.procesa({ key: 'roster_0', value: '{"name":"x"}' }), []);
+});
+
+test('reiniciaJuego: al cerrarse VALORANT se suelta el flag de espectador y se empieza limpio', () => {
+  const t = new TraductorJugador('mio');
+  t.procesa({ key: 'scene', value: 'Ascent' });
+  t.procesa({ key: 'team', value: 'observer' });
+  assert.equal(t.soyEspectador, true);
+  t.reiniciaJuego();
+  assert.equal(t.soyEspectador, false);
+});
+
+test('la vida y las habilidades se REPITEN cada pocos segundos aunque no cambien (si el servidor pierde la marca, se recupera)', () => {
+  const t = new TraductorJugador('mio');
+  t.procesa({ key: 'health', value: '80' });
+  t.procesa({ key: 'abilities', value: JSON.stringify({ grenade: 1, ability_1: 1, ability_2: 0 }) });
+  const tipos = (a: Accion[]) => envios(a).map((e) => e.type);
+  assert.deepEqual(tipos(t.tick(10_000)), ['aux_health', 'aux_abilities'], 'primera vuelta: manda vida y repite habilidades');
+  assert.deepEqual(tipos(t.tick(11_000)), [], 'sin cambios y dentro del margen: nada');
+  assert.deepEqual(tipos(t.tick(15_000)), ['aux_health', 'aux_abilities'], 'pasado el margen se repiten');
+  t.procesa({ key: 'scene', value: 'Ascent' });
+  t.procesa({ key: 'team', value: 'observer' });
+  assert.deepEqual(tipos(t.tick(30_000)), [], 'un espectador no manda nada');
+});
+
+test('C2: el marcador del jugador (propio y de compañeros) con nombre vacío o sólo espacios se descarta', () => {
+  const t = new TraductorJugador();
+  const m = (extra: Record<string, unknown>) => JSON.stringify({ player_id: 'p1', character: 'Clay', kills: 1, ...extra });
+  for (const name of ['', '   ']) {
+    assert.deepEqual(t.procesa({ key: 'scoreboard_0', value: m({ name, is_local: true }) }), []);
+    assert.deepEqual(t.procesa({ key: 'scoreboard_1', value: m({ name, teammate: true }) }), []);
+  }
+  assert.deepEqual(t.tick(0), [], 'ningún compañero vacío se manda');
+  assert.equal(t.procesa({ key: 'scoreboard_0', value: m({ name: 'Yo #EUW', is_local: true }) }).some((a) => a.tipo === 'envia'), true);
+  t.procesa({ key: 'scoreboard_1', value: m({ name: 'Amigo #EUW', teammate: true, player_id: 'p2' }) });
+  assert.ok(t.tick(0).some((a) => a.tipo === 'envia' && a.type === 'aux_scoreboard_team'));
 });

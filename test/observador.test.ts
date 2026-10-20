@@ -32,8 +32,8 @@ const marcadorGep = (puuid: string, team: number | string, extra: Record<string,
 
 test('scoreboard: ignora aperturas/cierres y marcadores sin nombre; manda la tabla A', () => {
   const t = new TraductorObservador();
-  for (const v of [null, 'open', 'closed', 'close']) assert.deepEqual(t.info({ key: 'scoreboard_0', value: v }), []);
-  assert.deepEqual(t.info({ key: 'scoreboard_0', value: '{"player_id":"x"}' }), []);
+  for (const v of [null, 'open', 'closed', 'close']) assert.deepEqual(envios(t.info({ key: 'scoreboard_0', value: v })), []);
+  assert.deepEqual(envios(t.info({ key: 'scoreboard_0', value: '{"player_id":"x"}' })), []);
   const [envio] = envios(t.info({ key: 'scoreboard_3', value: marcadorGep('p1', 0) }));
   assert.equal(envio.type, 'scoreboard');
   assert.equal((envio.data as { playerId: string }).playerId, 'p1');
@@ -169,10 +169,44 @@ test('volver al menú vacía roster y marcador de rondas', () => {
   t.info({ key: 'scoreboard_0', value: marcadorGep('viejo', 0) });
   t.info({ key: 'match_score', value: '{"team_0":7,"team_1":2}' });
   t.info({ key: 'scene', value: 'MainMenu' });
+  t.info({ key: 'scene', value: 'Ascent' }); // otra partida: ya no es el menú
   t.info({ key: 'match_score', value: '{"team_0":13,"team_1":1}' });
   const fin = t.info({ key: 'round_phase', value: 'game_end' }).find((x) => x.tipo === 'finMapa');
   assert.ok(fin && fin.tipo === 'finMapa');
   assert.deepEqual(fin.datos.roster, []);
+});
+
+test('el estado de la partida anterior que Overwolf repite al detectar el juego (ya en el menú) se ignora', () => {
+  const t = new TraductorObservador();
+  t.info({ key: 'scene', value: 'MainMenu' }); // Overwolf dice primero que estamos en el menú…
+  // …y luego repite lo último de la partida vieja:
+  const repetidos = [
+    t.evento({ key: 'match_start', value: null }),
+    t.info({ key: 'roster_3', value: JSON.stringify({ name: 'Fantasma #X', team: 1, character: 'Clay', player_id: 'f1' }) }),
+    t.info({ key: 'scoreboard_3', value: marcadorGep('f1', 0) }),
+    t.info({ key: 'match_score', value: '{"team_0":1,"team_1":0}' }),
+    t.info({ key: 'round_number', value: 2 }),
+    t.info({ key: 'round_phase', value: 'combat' }),
+    t.evento({ key: 'match_end', value: null }),
+  ];
+  for (const a of repetidos) {
+    assert.deepEqual(envios(a), [], 'no se manda nada al servidor');
+    assert.equal(a.some((x) => x.tipo === 'estadoJuego' || x.tipo === 'finConexion' || x.tipo === 'conecta'), false, 'ni estado de juego, ni cierra ni abre conexión');
+  }
+  assert.ok(repetidos[0].some((x) => x.tipo === 'log'), 'queda anotado en el log');
+
+  // Una partida de verdad que empieza después sí funciona (la escena deja de ser el menú).
+  t.info({ key: 'scene', value: 'CharacterSelectPersistentLevel' });
+  const real = t.info({ key: 'round_phase', value: 'combat' });
+  assert.ok(real.some((x) => x.tipo === 'estadoJuego'), 'ahora sí se hace caso');
+});
+
+test('observador que arranca EN MEDIO de una partida (la escena es la del mapa): no se ignora nada', () => {
+  const t = new TraductorObservador();
+  t.info({ key: 'scene', value: 'Ascent' });
+  const a = t.info({ key: 'round_phase', value: 'combat' });
+  assert.ok(a.some((x) => x.tipo === 'estadoJuego'));
+  assert.equal(envios(t.info({ key: 'scoreboard_0', value: marcadorGep('p', 0) })).length, 1);
 });
 
 test('match_end: fin de conexión y "Game Ended"', () => {
@@ -202,4 +236,122 @@ test('claves ignoradas y no tratadas', () => {
   const otra = t.info({ key: 'algo_nuevo', value: 1 });
   assert.equal(otra.length, 1);
   assert.equal(otra[0].tipo, 'log');
+});
+
+test('diagnóstico: apunta los marcadores que entrega Overwolf y los resume en el log sin alterar los envíos', () => {
+  const t = new TraductorObservador();
+  const a1 = t.info({ key: 'scoreboard_0', value: marcadorGep('p1', 0) });
+  const a2 = t.info({ key: 'scoreboard_1', value: 'open' }); // vacío: se descarta pero se cuenta
+  const logs = (acs: Accion[]) => acs.filter((a) => a.tipo === 'log').map((a) => (a as { texto: string }).texto);
+
+  assert.equal(envios(a1).length, 1, 'el marcador sigue enviándose');
+  assert.equal(envios(a2).length, 0, 'un marcador vacío sigue sin enviarse');
+  assert.match(logs(a1)[0] ?? '', /primera vez que llega scoreboard_0/);
+  assert.match(logs(a2)[0] ?? '', /primera vez que llega scoreboard_1 \(vacío\)/);
+
+  // El resumen sale al pasar el intervalo (se fuerza con el reloj de prueba).
+  const informe = (t as unknown as { cuentaMarcador: (k: string, v: unknown, ahora: number) => Accion[] }).cuentaMarcador(
+    'scoreboard_0',
+    marcadorGep('p1', 0),
+    Date.now() + 60_000,
+  );
+  assert.match(logs(informe).join(' '), /marcador GEP, últimos 30 s → .*scoreboard_0 Jugador p1 #TAG: 2/);
+});
+
+test('game_end releído al arrancar (sin haber visto la partida): se ignora y NO cierra la conexión', () => {
+  const t = new TraductorObservador();
+  const a = t.info({ key: 'round_phase', value: 'game_end' });
+  assert.equal(a.some((x) => x.tipo === 'finConexion'), false, 'no cierra la conexión con el servidor');
+  assert.equal(a.some((x) => x.tipo === 'finMapa'), false);
+  assert.match((a.find((x) => x.tipo === 'log') as { texto: string }).texto, /ignorado/);
+});
+
+/* ── Correcciones de la auditoría de octubre de 2026 (C2, C3, C4) ─────────── */
+
+test('C2: marcadores y rosters con nombre vacío o sólo espacios se descartan; con nombre pasan', () => {
+  const t = new TraductorObservador();
+  for (const nombre of ['', '  ', ' #TAG']) {
+    assert.deepEqual(envios(t.info({ key: 'scoreboard_1', value: marcadorGep('p1', 0, { name: nombre }) })), [], JSON.stringify(nombre));
+    const roster = JSON.stringify({ name: nombre, team: 0, character: 'Clay', player_id: 'p1' });
+    assert.deepEqual(t.info({ key: 'roster_1', value: roster }), [], JSON.stringify(nombre));
+  }
+  assert.equal(envios(t.info({ key: 'scoreboard_1', value: marcadorGep('p1', 0) })).length, 1);
+});
+
+test('C2: el marcador vacío no llega al roster del fin de mapa', () => {
+  const t = new TraductorObservador();
+  t.info({ key: 'scoreboard_1', value: marcadorGep('p1', 0, { name: '  ' }) });
+  t.info({ key: 'scoreboard_2', value: marcadorGep('p2', 1) });
+  t.info({ key: 'match_score', value: '{"team_0":13,"team_1":5}' });
+  const fin = t.info({ key: 'round_phase', value: 'game_end' }).find((x) => x.tipo === 'finMapa');
+  assert.ok(fin && fin.tipo === 'finMapa');
+  assert.deepEqual(fin.datos.roster.map((r) => r.name), ['Jugador p2']);
+});
+
+test('C3: tras el fin de mapa, alAutenticar no reenvía mapa ni modo ni match_start hasta que lleguen los nuevos', () => {
+  const t = new TraductorObservador();
+  t.info({ key: 'map', value: 'Bonsai' });
+  t.info({ key: 'game_mode', value: '{"mode":"bomb","custom":true}' });
+  t.info({ key: 'match_id', value: 'm-1' });
+  t.evento({ key: 'match_start', value: null });
+  t.info({ key: 'match_score', value: '{"team_0":13,"team_1":2}' });
+  const fin = t.info({ key: 'round_phase', value: 'game_end' });
+  const mapaFin = fin.find((x) => x.tipo === 'finMapa');
+  assert.ok(mapaFin && mapaFin.tipo === 'finMapa');
+  assert.equal(mapaFin.datos.matchId, 'm-1', 'el fin de mapa sí lleva lo de la partida que acaba');
+  assert.deepEqual(t.alAutenticar(), []);
+
+  t.info({ key: 'map', value: 'Ascent' });
+  assert.deepEqual(envios(t.alAutenticar()), [{ type: 'map', data: 'Ascent' }]);
+});
+
+test('C3: volver al menú también olvida mapa, modo y matchId', () => {
+  const t = new TraductorObservador();
+  t.info({ key: 'map', value: 'Bonsai' });
+  t.info({ key: 'game_mode', value: '{"mode":"bomb","custom":true}' });
+  t.info({ key: 'scene', value: 'MainMenu' });
+  assert.deepEqual(t.alAutenticar(), []);
+});
+
+test('C4: la ráfaga vieja en el menú se ignora; a los 4 s los mismos datos se aceptan', () => {
+  let ahora = 1_000_000;
+  const t = new TraductorObservador({ ahora: () => ahora });
+  t.juegoDetectado();
+  t.info({ key: 'scene', value: 'MainMenu' });
+  assert.deepEqual(envios(t.info({ key: 'scoreboard_3', value: marcadorGep('f1', 0) })), []);
+  assert.deepEqual(envios(t.info({ key: 'match_score', value: '{"team_0":1,"team_1":0}' })), []);
+
+  ahora += 4000; // Overwolf no actualizó la escena: la partida es real
+  const a = t.info({ key: 'scoreboard_3', value: marcadorGep('f1', 0) });
+  assert.equal(envios(a).length, 1);
+  assert.ok(a.some((x) => x.tipo === 'log' && x.texto.includes('filtro de estado viejo desactivado')), 'queda una línea de log');
+  assert.equal(envios(t.info({ key: 'match_score', value: '{"team_0":2,"team_1":0}' })).length, 1);
+  assert.ok(t.evento({ key: 'match_start', value: null }).some((x) => x.tipo === 'estadoJuego'));
+  // El log de desactivación sale una sola vez.
+  assert.equal(t.info({ key: 'scoreboard_3', value: marcadorGep('f1', 0) }).some((x) => x.tipo === 'log'), false);
+});
+
+test('C4: un match_start real (fuera de la ráfaga) se acepta al instante, sin esperar los 3 s', () => {
+  let ahora = 5_000;
+  const t = new TraductorObservador({ ahora: () => ahora });
+  t.juegoDetectado();
+  t.info({ key: 'scene', value: 'MainMenu' });
+  assert.deepEqual(envios(t.evento({ key: 'match_start', value: null })), [], 'pegado a la ráfaga: es lo repetido');
+  ahora += 1500;
+  assert.equal(envios(t.evento({ key: 'match_start', value: null })).length, 1);
+  assert.equal(envios(t.info({ key: 'scoreboard_1', value: marcadorGep('p1', 0) })).length, 1);
+});
+
+test('C4: un cambio de escena distinto de menú o una fase de ronda distinta de la repetida desactivan el filtro', () => {
+  const t = new TraductorObservador({ ahora: () => 10 });
+  t.juegoDetectado();
+  t.info({ key: 'scene', value: 'MainMenu' });
+  assert.deepEqual(envios(t.info({ key: 'round_phase', value: 'combat' })), []); // repetida: se anota como vieja
+  assert.ok(t.info({ key: 'round_phase', value: 'end' }).some((x) => x.tipo === 'estadoJuego'), 'fase distinta: señal viva');
+
+  const u = new TraductorObservador({ ahora: () => 10 });
+  u.juegoDetectado();
+  u.info({ key: 'scene', value: 'MainMenu' });
+  u.info({ key: 'scene', value: 'Ascent' });
+  assert.equal(envios(u.info({ key: 'scoreboard_1', value: marcadorGep('p1', 0) })).length, 1);
 });

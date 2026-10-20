@@ -14,14 +14,23 @@ export type ResultadoSala = { ok: true; codigo: string } | { ok: false; error: s
 
 const MAPA = '/Game/Maps/Ascent/Ascent';
 const MODO = '/Game/GameModes/Bomb/BombGameMode.BombGameMode_C';
+/** Cuántas veces y cada cuánto se reintenta leer la party antes de decir que no hay. */
+const REINTENTOS_PARTY = 5;
+const ESPERA_PARTY_MS = 1500;
 const POD_DE_RESERVA = 'aresriot.aws-scl1-prod.latam-gp-santiago-1';
 
 export async function creaSalaTorneo(riot: ResolutorRiot): Promise<ResultadoSala> {
   const c = await riot.contexto();
   if (c === null || c.glz === '') return { ok: false, error: 'El cliente de Riot no está abierto.' };
 
-  const p = await leeParty(c).catch(() => null);
-  if (p === null) return { ok: false, error: 'No hay party activa en el cliente de Riot.' };
+  /* Al salir de una partida Riot tarda unos segundos en devolver la party: pulsar «Create lobby» justo entonces
+     daba «No hay party activa». Se reintenta unos segundos antes de rendirse. */
+  let p = await leeParty(c).catch(() => null);
+  for (let intento = 1; p === null && intento <= REINTENTOS_PARTY; intento++) {
+    await new Promise((r) => setTimeout(r, ESPERA_PARTY_MS));
+    p = await leeParty(c).catch(() => null);
+  }
+  if (p === null) return { ok: false, error: 'No hay party activa en el cliente de Riot (¿acabas de salir de una partida? Espera unos segundos).' };
   const base = `${c.glz}/parties/v1/parties/${p.id}`;
   const post = (ruta: string, cuerpo?: unknown) => pide(`${base}${ruta}`, { metodo: 'POST', cabeceras: c.cabeceras, cuerpo });
   const falla = (que: string, estado: number): ResultadoSala => ({ ok: false, error: `${que} falló (${estado}).` });

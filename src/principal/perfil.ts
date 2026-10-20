@@ -39,7 +39,7 @@ export function perfilPara(modo: Modo, ip: string | null = null): Perfil {
     case 'observer':
       return { mode: 'observer', ingestIp: ip, lockConnection: true, forceAutostart: false, forceTray: true, startHidden: false };
     case 'player':
-      return { mode: 'player', ingestIp: ip, lockConnection: true, forceAutostart: true, forceTray: true, startHidden: true };
+      return { mode: 'player', ingestIp: ip, lockConnection: true, forceAutostart: false, forceTray: true, startHidden: false };
   }
 }
 

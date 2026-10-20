@@ -82,6 +82,7 @@ test('métodos síncronos y de envío → su canal', () => {
     ['paraLectorSala', [], CANALES.paraSala, []],
     ['aplicaAtajos', [{ enabled: {} }], CANALES.aplicaAtajos, [{ enabled: {} }]],
     ['suspendeAtajos', [], CANALES.suspendeAtajos, []],
+    ['colocaJugadores', [[{ puuid: 'p', equipo: 'TeamOne' }]], CANALES.colocaJugadores, [[{ puuid: 'p', equipo: 'TeamOne' }]]],
     ['operadorOverlay', [true], CANALES.operador, [true]],
     ['operadorOverlay', ['no-booleano'], CANALES.operador, [false]],
     ['ventanaMinimizar', [], CANALES.minimizar, []],

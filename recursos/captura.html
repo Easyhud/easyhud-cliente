@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <title>Easy HUD · detector de pausa</title>
+  </head>
+  <body>
+    <!--
+      Ventana oculta del OBSERVADOR. Recibe un flujo de vídeo de la pantalla en miniatura (mucho más ligero que
+      pedir capturas sueltas: ~10 % de un núcleo frente a ~100 %), lo reduce a 96×54 y mide cuántos píxeles tienen
+      color. No guarda ni envía imágenes: sólo dos números por muestra (color y brillo) al programa.
+    -->
+    <video id="v" muted playsinline></video>
+    <canvas id="c" width="96" height="54"></canvas>
+    <canvas id="t" width="40" height="16"></canvas>
+    <script>
+      let flujo = null;
+      let reloj = null;
+      const v = document.getElementById('v');
+      const ctx = document.getElementById('c').getContext('2d', { willReadFrequently: true });
+      // El timer del juego (arriba, en el centro). Una pausa lo deja quieto; en la compra cambia cada segundo.
+      const ctxT = document.getElementById('t').getContext('2d', { willReadFrequently: true });
+      let previo = null;
+      let ultimoMovimiento = Date.now();
+
+      function para() {
+        if (reloj !== null) clearInterval(reloj);
+        reloj = null;
+        if (flujo !== null) for (const p of flujo.getTracks()) p.stop();
+        flujo = null;
+        v.srcObject = null;
+        previo = null;
+        ultimoMovimiento = Date.now();
+      }
+
+      function mide() {
+        if (v.videoWidth === 0) return;
+        ctx.drawImage(v, 0, 0, 96, 54);
+        const d = ctx.getImageData(0, 0, 96, 54).data;
+        const n = d.length / 4;
+        let colorido = 0;
+        let luz = 0;
+        for (let i = 0; i < d.length; i += 4) {
+          const r = d[i];
+          const g = d[i + 1];
+          const b = d[i + 2];
+          if (Math.max(r, g, b) - Math.min(r, g, b) > 28) colorido++;
+          luz += 0.299 * r + 0.587 * g + 0.114 * b;
+        }
+        // ¿Se movió el timer? Se compara su recorte con el de la muestra anterior.
+        ctxT.drawImage(v, v.videoWidth * 0.455, 0, v.videoWidth * 0.09, v.videoHeight * 0.075, 0, 0, 40, 16);
+        const t = ctxT.getImageData(0, 0, 40, 16).data;
+        if (previo !== null) {
+          let cambios = 0;
+          for (let i = 0; i < t.length; i += 4) {
+            const a = 0.299 * t[i] + 0.587 * t[i + 1] + 0.114 * t[i + 2];
+            const b = 0.299 * previo[i] + 0.587 * previo[i + 1] + 0.114 * previo[i + 2];
+            if (Math.abs(a - b) > 40) cambios++;
+          }
+          if (cambios / (t.length / 4) > 0.03) ultimoMovimiento = Date.now();
+        }
+        previo = t;
+        window.capturaAPI.muestra({ color: colorido / n, brillo: luz / n, quietoMs: Date.now() - ultimoMovimiento });
+      }
+
+      window.capturaAPI.alArrancar(async (id) => {
+        para();
+        try {
+          flujo = await navigator.mediaDevices.getUserMedia({
+            audio: false,
+            video: { mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: id, maxWidth: 480, maxHeight: 270, maxFrameRate: 10 } },
+          });
+          v.srcObject = flujo;
+          await v.play();
+          reloj = setInterval(mide, 100);
+        } catch (e) {
+          window.capturaAPI.fallo(String(e && e.message ? e.message : e));
+        }
+      });
+      window.capturaAPI.alParar(para);
+    </script>
+  </body>
+</html>

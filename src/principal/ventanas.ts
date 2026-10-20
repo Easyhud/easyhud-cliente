@@ -12,7 +12,7 @@
 
 import { BrowserWindow, screen, shell, type WebContents } from 'electron';
 import type { Almacen, FormaClaves } from './almacen.ts';
-import { PAGINA_JUGADOR, PANEL, PRELOAD } from './rutas.ts';
+import { PAGINA_JUGADOR, PANEL, PRELOAD, PRELOAD_JUGADOR } from './rutas.ts';
 
 const FONDO = '#08080a';
 
@@ -75,21 +75,21 @@ export function creaVentanaObservador(almacen: Almacen, desarrollo: boolean): Br
 }
 
 export function creaVentanaJugador(): BrowserWindow {
-  // Antes: alto 460 con máximo 320. Se unifica a 750×320.
+  // 750×820 (alto ajustable): cabe quién eres, qué hace el programa, su estado y la cámara.
   const v = new BrowserWindow({
     x: 0,
     y: 0,
     width: 750,
-    height: 320,
+    height: 820,
     minWidth: 750,
-    minHeight: 320,
+    minHeight: 640,
     maxWidth: 750,
-    maxHeight: 320,
-    resizable: false,
+    maxHeight: 1000,
+    resizable: true,
     backgroundColor: FONDO,
     title: 'Easy HUD',
     show: false,
-    webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false, devTools: false },
+    webPreferences: { preload: PRELOAD_JUGADOR, contextIsolation: true, sandbox: true, nodeIntegration: false, devTools: false },
   });
   blindaContenido(v.webContents);
   v.on('page-title-updated', (e) => e.preventDefault());

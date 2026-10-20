@@ -32,6 +32,11 @@ export function registraIpc(
     e.returnValue = observador?.urlObs ?? `http://localhost:${ctx.puertoLocal}/`;
   });
 
+  // Sólo en desarrollo: `EASY_ENDPOINT=http://localhost:5200` hace que el panel lea de un servidor local.
+  ipcMain.on(CANALES.endpointDatos, (e) => {
+    e.returnValue = ctx.desarrollo ? (process.env.EASY_ENDPOINT ?? '') : '';
+  });
+
   ipcMain.on(CANALES.conecta, (_e, token: unknown, grupo: unknown) => observador?.conecta(token, grupo));
   ipcMain.on(CANALES.arrancaOverlay, (_e, token: unknown, grupo: unknown) => observador?.arrancaOverlayLocal(token, grupo));
   ipcMain.on(CANALES.paraOverlay, () => void observador?.local.para());
@@ -41,6 +46,7 @@ export function registraIpc(
   ipcMain.handle(CANALES.creaSala, () =>
     observador ? observador.creaSala() : { ok: false, error: 'Solo el observador crea la sala.' },
   );
+  ipcMain.on(CANALES.colocaJugadores, (_e, lista: unknown) => observador?.colocaJugadores(lista));
   ipcMain.handle(CANALES.llamaJugadores, (_e, puuids: unknown) =>
     observador ? observador.llamaJugadores(puuids ?? []) : { ok: false, error: 'Solo el observador llama a los jugadores.' },
   );

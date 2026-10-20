@@ -19,8 +19,11 @@ export const SALIDA = resolve(import.meta.dirname, '..');
 export const PROYECTO = resolve(SALIDA, '..');
 
 export const PRELOAD = join(SALIDA, 'preload', 'puente.cjs');
+export const PRELOAD_JUGADOR = join(SALIDA, 'preload', 'jugador.cjs');
+export const PRELOAD_CAPTURA = join(SALIDA, 'preload', 'captura.cjs');
 export const PANEL = join(SALIDA, 'renderer', 'panel', 'index.html');
 export const PAGINA_JUGADOR = join(SALIDA, 'renderer', 'jugador.html');
+export const PAGINA_CAPTURA = join(SALIDA, 'renderer', 'captura.html');
 
 export function raizOverlay(empaquetado: boolean): string {
   return empaquetado ? join(process.resourcesPath, 'overlay') : join(PROYECTO, 'overlay-empaquetado');

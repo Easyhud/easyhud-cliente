@@ -18,7 +18,10 @@
  *      `reconnect_attempt` y `reconnect`.
  *   3. Al abrir uno nuevo se cierra el anterior esté como esté (conectado o
  *      reintentando): no quedan sockets fantasma con oyentes duplicados.
- *   4. Un logon sin acuse en `esperaAckMs` se da por fallido y se reintenta.
+ *   4. Un logon sin acuse en `esperaAckMs` se da por fallido y se reintenta: es una
+ *      reconexión INTERNA (el socket y sus oyentes se conservan, no se pasa por
+ *      «cerrado») que vuelve a hacer el logon al reabrir. Tras `MAX_REINTENTOS_ACK`
+ *      fallos seguidos, con espera creciente, se da por perdido («Connection Failed»).
  *
  * No sabe nada de Electron: avisa por la interfaz `Avisos` y quien lo usa
  * decide si eso es un diálogo, el título de la ventana o una línea de log.
@@ -47,6 +50,8 @@ export interface Avisos {
   estado(mensaje: string, clase: ClaseEstado): void;
   dialogo(titulo: string, mensaje: string, tipo: 'warning' | 'error'): void;
   autenticado(info: InfoAutenticado): void;
+  /** `cam_config` del servidor (sólo llega a los jugadores). */
+  camara?(carga: unknown): void;
   /** "Marcar desconectado": atajos fuera, bucle del jugador parado, etc. */
   desconectado(): void;
   log(texto: string): void;
@@ -58,9 +63,21 @@ export interface OpcionesEnlace {
   /** Secreto de reconexión vigente (se consulta en cada logon). */
   secreto?: () => string;
   esperaAckMs?: number;
+  /** Espera antes de volver a entrar cuando el servidor cierra al observador (por defecto 3 s). */
+  reintentoCierreMs?: number;
+  /** Espera base antes de reabrir tras un logon sin acuse; crece con cada intento (por defecto 1 s). */
+  reintentoAckBaseMs?: number;
   /** Opciones extra del socket (las pruebas acortan tiempos). */
   opcionesSocket?: Partial<ManagerOptions & SocketOptions>;
+  /** Fábrica del socket (las pruebas ponen uno falso). Por defecto `io` de socket.io-client. */
+  crearSocket?: (url: string, opciones: Partial<ManagerOptions & SocketOptions>) => Socket;
 }
+
+/** Cuántas veces seguidas se vuelve a entrar tras un cierre del servidor antes de darlo por perdido. */
+const MAX_REINTENTOS_CIERRE = 20;
+
+/** Cuántos logon seguidos sin acuse se reintentan antes de darlo por perdido. */
+const MAX_REINTENTOS_ACK = 5;
 
 type Resultado = { ok: true; avisados: unknown } | { ok: false; error: string };
 
@@ -76,19 +93,31 @@ export class EnlaceIngesta {
   private inalcanzable = false;
   private avisadoInalcanzable = false;
   private yaConecto = false;
+  private reintentosCierre = 0;
+  /** Logon sin acuse reintentados seguidos (se pone a 0 con un acuse o al abrir de nuevo). */
+  private reintentosAck = 0;
+  /** Verdadero mientras el propio programa corta el socket para reabrirlo: ese `disconnect` no es un cierre. */
+  private reabriendo = false;
+  private relojReintentoAck: NodeJS.Timeout | null = null;
   private _autenticado = false;
   private readonly version: string;
   private readonly avisos: Avisos;
   private readonly secreto: () => string;
   private readonly esperaAckMs: number;
+  private readonly reintentoCierreMs: number;
+  private readonly reintentoAckBaseMs: number;
   private readonly opcionesSocket: Partial<ManagerOptions & SocketOptions>;
+  private readonly crearSocket: (url: string, opciones: Partial<ManagerOptions & SocketOptions>) => Socket;
 
   constructor(opciones: OpcionesEnlace) {
     this.version = opciones.version;
     this.avisos = opciones.avisos;
     this.secreto = opciones.secreto ?? (() => '');
     this.esperaAckMs = opciones.esperaAckMs ?? 10_000;
+    this.reintentoCierreMs = opciones.reintentoCierreMs ?? 3000;
+    this.reintentoAckBaseMs = opciones.reintentoAckBaseMs ?? 1000;
     this.opcionesSocket = opciones.opcionesSocket ?? {};
+    this.crearSocket = opciones.crearSocket ?? ((url, o) => io(url, o));
   }
 
   get autenticado(): boolean {
@@ -116,10 +145,11 @@ export class EnlaceIngesta {
     this.inalcanzable = false;
     this.avisadoInalcanzable = false;
     this.yaConecto = false;
+    this.reintentosAck = 0;
     this.avisos.estado('Connecting', 'warn');
     this.avisos.log(`abriendo socket de ${this.descripcion()} contra ${url}`);
 
-    const s = io(url, {
+    const s = this.crearSocket(url, {
       reconnection: true,
       reconnectionDelay: 1000,
       reconnectionDelayMax: 5000,
@@ -132,6 +162,9 @@ export class EnlaceIngesta {
 
     s.on('connect', () => this.alConectar(s));
     s.on(this.eventoAck(), (msg: unknown) => this.alAcuse(s, msg));
+    s.on('cam_config', (msg: unknown) => {
+      if (this.socket === s) this.avisos.camara?.(leeCarga(msg));
+    });
     s.on('disconnect', (motivo) => this.alDesconectar(s, motivo));
     s.on('connect_error', (e) => this.alFallarConexion(s, e));
     s.io.on('reconnect_attempt', (n) => {
@@ -158,6 +191,8 @@ export class EnlaceIngesta {
     const s = this.socket;
     this.socket = null;
     this.paraRelojAck();
+    if (this.relojReintentoAck !== null) clearTimeout(this.relojReintentoAck);
+    this.relojReintentoAck = null;
     if (s !== null) {
       s.removeAllListeners();
       s.io.removeAllListeners();
@@ -198,14 +233,38 @@ export class EnlaceIngesta {
     }
     this.avisos.log(`logon enviado (${this.descripcion()})`);
     this.paraRelojAck();
-    this.relojAck = setTimeout(() => {
-      if (this.socket !== s || this._autenticado) return;
-      this.avisos.log(`sin acuse del logon en ${this.esperaAckMs} ms: se reintenta`);
+    this.relojAck = setTimeout(() => this.sinAcuse(s), this.esperaAckMs);
+  }
+
+  /**
+   * Pasó el plazo sin acuse del logon. Se corta el socket y se vuelve a abrir (así vuelve a pasar por
+   * `connect` y a hacer el logon), pero SIN tratarlo como un cierre: el socket y sus oyentes siguen y el
+   * estado no pasa por «cerrado». La espera crece con cada intento; agotados, se da por perdido.
+   */
+  private sinAcuse(s: Socket): void {
+    if (this.socket !== s || this._autenticado) return;
+    if (this.reintentosAck >= MAX_REINTENTOS_ACK) {
+      this.avisos.log(`sin acuse del logon tras ${MAX_REINTENTOS_ACK} reintentos: se da por perdido`);
+      this.cierraSocket(true);
       this.avisos.estado('Connection Failed', 'danger');
-      // Desconexión del cliente (no reintenta sola) y conexión nueva: vuelve a pasar por `connect`.
+      return;
+    }
+    this.reintentosAck += 1;
+    const espera = this.reintentoAckBaseMs * this.reintentosAck;
+    this.avisos.log(`sin acuse del logon en ${this.esperaAckMs} ms: se reintenta en ${espera} ms (${this.reintentosAck}/${MAX_REINTENTOS_ACK})`);
+    this.avisos.estado('Reconnecting', 'warn');
+    // `disconnect()` emite `disconnect` al instante: `alDesconectar` debe ignorarlo.
+    this.reabriendo = true;
+    try {
       s.disconnect();
-      s.connect();
-    }, this.esperaAckMs);
+    } finally {
+      this.reabriendo = false;
+    }
+    this.relojReintentoAck = setTimeout(() => {
+      this.relojReintentoAck = null;
+      if (this.socket === s) s.connect();
+    }, espera);
+    this.relojReintentoAck.unref?.();
   }
 
   private paraRelojAck(): void {
@@ -223,6 +282,8 @@ export class EnlaceIngesta {
     const porGrupo = this.intencion.rol === 'jugador' && 'grupo' in this.intencion;
 
     if (d.value === true) {
+      this.reintentosCierre = 0;
+      this.reintentosAck = 0;
       this._autenticado = true;
       this.avisos.estado('Connected', 'success');
       this.avisos.log(`autenticado como ${this.descripcion()}${reason ? ` (${reason})` : ''}`);
@@ -245,7 +306,7 @@ export class EnlaceIngesta {
   /* ── Caídas y fallos ────────────────────────────────────────────────────── */
 
   private alDesconectar(s: Socket, motivo: string): void {
-    if (this.socket !== s) return;
+    if (this.socket !== s || this.reabriendo) return;
     this.paraRelojAck();
     const eraAutenticado = this._autenticado;
     this._autenticado = false;
@@ -254,6 +315,21 @@ export class EnlaceIngesta {
       // Caída del transporte: socket.io reconecta solo y `connect` repetirá el logon.
       if (eraAutenticado) this.avisos.desconectado();
       this.avisos.estado('Reconnecting', 'warn');
+      return;
+    }
+    // El servidor cerró a un OBSERVADOR que estaba dentro (reinicio o despliegue del servidor,
+    // partido caducado…): socket.io no reconecta solo en ese caso, así que se reintenta aquí.
+    // Antes se daba por terminado y había que pulsar Reconnect a mano cada vez. El fin de
+    // partido no pasa por aquí: el programa cierra él mismo (`cierra`) y este socket ya no existe.
+    if (this.intencion?.rol === 'observador' && eraAutenticado && this.reintentosCierre < MAX_REINTENTOS_CIERRE) {
+      this.reintentosCierre += 1;
+      this.avisos.desconectado();
+      this.avisos.estado('Reconnecting', 'warn');
+      this.avisos.log(`el servidor cerró la conexión: se reintenta en ${this.reintentoCierreMs} ms (${this.reintentosCierre}/${MAX_REINTENTOS_CIERRE})`);
+      const t = setTimeout(() => {
+        if (this.socket === s) s.connect();
+      }, this.reintentoCierreMs);
+      t.unref?.();
       return;
     }
     // Cierre del servidor (fin de partido, token caducado…): no hay reconexión automática.
@@ -306,10 +382,10 @@ export class EnlaceIngesta {
     return true;
   }
 
-  /** `obs_lobby`. La sala nula no se manda nunca. */
+  /** `obs_lobby`. `null` = ya no hay sala (el servidor se olvida de la vieja). */
   enviaSala(sala: unknown): boolean {
     const i = this.intencion;
-    if (sala === null || !this._autenticado || this.socket === null || i?.rol !== 'observador') return false;
+    if (!this._autenticado || this.socket === null || i?.rol !== 'observador') return false;
     this.socket.emit('obs_lobby', JSON.stringify({ obsName: nombreDelToken(i.token), groupCode: i.grupo.toUpperCase(), sala }));
     return true;
   }

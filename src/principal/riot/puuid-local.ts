@@ -17,24 +17,39 @@ import { join } from 'node:path';
 import { leeLockfile } from './contexto.ts';
 import { objeto, pide } from './peticion.ts';
 
-/** El puuid de la sesión abierta en el cliente de Riot local, o `''`. */
-export async function leePuuidLocal(localAppData = process.env.LOCALAPPDATA ?? ''): Promise<string> {
-  if (localAppData === '') return '';
+/** Una petición GET al cliente de Riot local; `null` si no está abierto o no contesta. */
+async function pideLocal(ruta: string, localAppData: string): Promise<Record<string, unknown> | null> {
+  if (localAppData === '') return null;
   try {
     const bloqueo = leeLockfile(await readFile(join(localAppData, 'Riot Games', 'Riot Client', 'Config', 'lockfile'), 'utf8'));
-    if (bloqueo === null) return '';
+    if (bloqueo === null) return null;
     const auth = Buffer.from(`riot:${bloqueo.clave}`).toString('base64');
-    const r = await pide(`${bloqueo.protocolo}://127.0.0.1:${bloqueo.puerto}/entitlements/v1/token`, {
+    const r = await pide(`${bloqueo.protocolo}://127.0.0.1:${bloqueo.puerto}${ruta}`, {
       cabeceras: { Authorization: `Basic ${auth}` },
       inseguro: true,
       esperaMs: 3000,
     });
-    if (r.estado !== 200) return '';
-    const subject = objeto(r.json()).subject;
-    return typeof subject === 'string' ? subject : '';
+    return r.estado === 200 ? objeto(r.json()) : null;
   } catch {
-    return '';
+    return null;
   }
+}
+
+/** El puuid de la sesión abierta en el cliente de Riot local, o `''`. */
+export async function leePuuidLocal(localAppData = process.env.LOCALAPPDATA ?? ''): Promise<string> {
+  const subject = (await pideLocal('/entitlements/v1/token', localAppData))?.subject;
+  return typeof subject === 'string' ? subject : '';
+}
+
+/**
+ * El Riot ID (`Nombre#TAG`) de la sesión abierta, o `''`. Sirve para la cámara:
+ * se publica con ese nombre aunque GEP no lo dé con el TAG.
+ */
+export async function leeRiotIdLocal(localAppData = process.env.LOCALAPPDATA ?? ''): Promise<string> {
+  const j = await pideLocal('/chat/v1/session', localAppData);
+  const nombre = j?.game_name;
+  const tag = j?.game_tag;
+  return typeof nombre === 'string' && nombre !== '' && typeof tag === 'string' && tag !== '' ? `${nombre}#${tag}` : '';
 }
 
 export interface OpcionesFuentePuuid {

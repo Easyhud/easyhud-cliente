@@ -1,40 +1,695 @@
 <!doctype html>
-<html lang="es">
+<html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'" />
     <title>Easy HUD</title>
     <style>
+      :root {
+        --fondo: #08080a;
+        --panel: #101013;
+        --linea: #26262b;
+        --txt: #e8e8ea;
+        --dim: #8a8a92;
+        --ok: #3ddc84;
+        --aviso: #f5c542;
+        --mal: #ff4655;
+      }
       html,
       body {
         margin: 0;
-        height: 100%;
-        background: #08080a;
-        color: #e8e8ea;
-        font: 14px/1.5 system-ui, 'Segoe UI', sans-serif;
+        min-height: 100%;
+        background: var(--fondo);
+        color: var(--txt);
+        font: 13px/1.45 system-ui, 'Segoe UI', sans-serif;
       }
       body {
         display: flex;
         flex-direction: column;
+        gap: 10px;
+        padding: 14px 18px 18px;
+        box-sizing: border-box;
+      }
+      header {
+        display: flex;
         align-items: center;
-        justify-content: center;
-        text-align: center;
-        gap: 6px;
+        justify-content: space-between;
       }
       h1 {
-        margin: 0 0 8px;
-        font-size: 22px;
+        margin: 0;
+        font-size: 18px;
         letter-spacing: 0.2em;
       }
-      p {
+      #version {
+        color: var(--dim);
+        font-size: 12px;
+        margin-left: 10px;
+        letter-spacing: 0;
+      }
+      #resumen {
+        padding: 3px 12px;
+        border: 1px solid var(--linea);
+        font-weight: 700;
+        font-size: 11px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+      }
+      body[data-nivel='ok'] #resumen {
+        color: var(--ok);
+        border-color: rgb(61 220 132 / 50%);
+      }
+      body[data-nivel='aviso'] #resumen {
+        color: var(--aviso);
+        border-color: rgb(245 197 66 / 50%);
+      }
+      body[data-nivel='error'] #resumen {
+        color: var(--mal);
+        border-color: rgb(255 70 85 / 60%);
+      }
+
+      /* Quién eres y que está todo en marcha: lo primero que ve el jugador. */
+      #hola {
+        border: 1px solid var(--linea);
+        border-left: 3px solid var(--ok);
+        background: var(--panel);
+        padding: 10px 14px;
+      }
+      body[data-nivel='aviso'] #hola {
+        border-left-color: var(--aviso);
+      }
+      body[data-nivel='error'] #hola {
+        border-left-color: var(--mal);
+      }
+      #hola .nick {
+        font-size: 20px;
+        font-weight: 700;
+      }
+      #hola .sub {
+        color: var(--dim);
+        margin-top: 2px;
+      }
+
+      details.caja > summary {
+        cursor: pointer;
+        list-style: none;
+        font-size: 10px;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: var(--dim);
+        font-weight: 600;
+      }
+      details.caja > summary::-webkit-details-marker {
+        display: none;
+      }
+      details.caja > summary::before {
+        content: '▸ ';
+      }
+      details.caja[open] > summary::before {
+        content: '▾ ';
+      }
+      .columnas {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 14px;
+        margin-top: 8px;
+      }
+      .columnas h3 {
+        margin: 0 0 4px;
+        font-size: 12px;
+      }
+      .columnas ul {
         margin: 0;
-        opacity: 0.75;
+        padding-left: 16px;
+        color: var(--dim);
+        font-size: 12px;
+      }
+      .columnas li {
+        margin-bottom: 3px;
+      }
+      .si h3 {
+        color: var(--ok);
+      }
+      .no h3 {
+        color: var(--aviso);
+      }
+
+      #problemas {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .problema {
+        padding: 7px 10px;
+        border-left: 3px solid var(--aviso);
+        background: rgb(245 197 66 / 8%);
+      }
+      .problema[data-nivel='error'] {
+        border-left-color: var(--mal);
+        background: rgb(255 70 85 / 10%);
+      }
+      .problema b {
+        display: block;
+      }
+      .problema span {
+        color: var(--dim);
+        font-size: 12px;
+      }
+
+      .caja {
+        background: var(--panel);
+        border: 1px solid var(--linea);
+        padding: 8px 12px;
+      }
+      .caja h2 {
+        margin: 0 0 6px;
+        font-size: 10px;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: var(--dim);
+        font-weight: 600;
+      }
+      .fila {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        padding: 2px 0;
+      }
+      .punto {
+        flex: 0 0 9px;
+        height: 9px;
+        border-radius: 50%;
+        background: #4a4a52;
+        align-self: center;
+      }
+      .punto[data-e='ok'] {
+        background: var(--ok);
+      }
+      .punto[data-e='aviso'] {
+        background: var(--aviso);
+      }
+      .punto[data-e='mal'] {
+        background: var(--mal);
+      }
+      .fila .k {
+        flex: 0 0 150px;
+        color: var(--dim);
+      }
+      .fila .v {
+        flex: 1;
+        min-width: 0;
+        overflow-wrap: anywhere;
+      }
+
+      #paquetes {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .chip {
+        padding: 1px 7px;
+        border: 1px solid var(--linea);
+        color: var(--dim);
+        font-size: 11px;
+      }
+      .chip b {
+        color: var(--txt);
+        font-weight: 600;
+      }
+      #historial,
+      #errores {
+        margin: 0;
+        padding-left: 16px;
+        color: var(--dim);
+        font-size: 12px;
+      }
+      #historial .dim {
+        opacity: 0.7;
+      }
+      #consejo {
+        margin: 6px 0 0;
+        color: var(--aviso);
+        font-size: 12px;
+      }
+      .acciones {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+        margin-top: 8px;
+      }
+
+      .camaraFila {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      #cam {
+        flex: 0 0 56px;
+        width: 56px;
+        height: 56px;
+        border-radius: 50%;
+        border: 2px solid #3a3a40;
+        background: #131316;
+        color: #8a8a92;
+        cursor: pointer;
+        display: grid;
+        place-items: center;
+        transition: border-color 0.15s, color 0.15s, background 0.15s;
+      }
+      #cam:hover {
+        border-color: #6a6a72;
+      }
+      #cam svg {
+        width: 26px;
+        height: 26px;
+      }
+      #cam .tachado {
+        display: block;
+      }
+      body[data-modo='encendida'] #cam,
+      body[data-modo='directo'] #cam {
+        color: #fff;
+        border-color: #fff;
+      }
+      body[data-modo='encendida'] #cam .tachado,
+      body[data-modo='directo'] #cam .tachado {
+        display: none;
+      }
+      body[data-modo='directo'] #cam {
+        border-color: var(--mal);
+        background: #2a0d12;
+        box-shadow: 0 0 0 4px rgba(255, 70, 85, 0.25);
+      }
+      #estadoCam {
+        font-weight: 600;
+      }
+      body[data-modo='directo'] #estadoCam {
+        color: var(--mal);
+      }
+      #nota {
+        color: var(--dim);
+        font-size: 12px;
+      }
+      #camara-ajustes {
+        margin-top: 6px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 12px;
+      }
+      #dispositivo {
+        max-width: 280px;
+        background: #131316;
+        color: var(--txt);
+        border: 1px solid #3a3a40;
+        padding: 3px 6px;
+        font: inherit;
+      }
+      #permiso {
+        color: var(--dim);
+      }
+      #permiso[data-ok='no'] {
+        color: var(--mal);
+      }
+
+      .botones {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 4px;
+        align-items: center;
+      }
+      button.btn {
+        background: #16161a;
+        color: var(--txt);
+        border: 1px solid #3a3a40;
+        padding: 6px 14px;
+        font: inherit;
+        cursor: pointer;
+      }
+      button.btn--salir {
+        border-color: rgb(255 70 85 / 60%);
+        color: var(--mal);
+        margin-left: auto;
+      }
+      button.btn:hover {
+        border-color: #6a6a72;
+      }
+      button.btn[disabled] {
+        opacity: 0.5;
+        cursor: default;
+      }
+      #aviso {
+        color: var(--dim);
+        font-size: 12px;
       }
     </style>
   </head>
-  <body>
-    <h1>EASY HUD</h1>
-    <p>Cliente de jugador en marcha.</p>
-    <p>Puedes cerrar esta ventana: sigue funcionando desde la bandeja.</p>
+  <body data-modo="apagada" data-nivel="ok">
+    <header>
+      <h1>EASY HUD<span id="version"></span></h1>
+      <div id="resumen">Checking…</div>
+    </header>
+
+    <div id="hola">
+      <div class="nick" id="nick">Starting…</div>
+      <div class="sub" id="subhola">Easy HUD is running. Closing this window only hides it: it keeps working from the system tray (next to the clock). To close it completely use <b>Quit Easy HUD</b> below, or right-click the tray icon → Quit.</div>
+    </div>
+
+    <div id="problemas"></div>
+
+    <details class="caja" open>
+      <summary>What Easy HUD does</summary>
+      <div class="columnas">
+        <div class="si">
+          <h3>It does</h3>
+          <ul>
+            <li>Reads <b>your own VALORANT data</b> through Overwolf: health, abilities, round summary.</li>
+            <li>Sends it to the tournament’s broadcast server so the stream can show it.</li>
+            <li>Reads your <b>Riot ID</b> from the Riot Client so the operator can find you, and joins the lobby code when the operator calls you.</li>
+            <li>Shows your camera on stream <b>only if you press the camera button</b>.</li>
+          </ul>
+        </div>
+        <div class="no">
+          <h3>It never</h3>
+          <ul>
+            <li>Never reads your password or Riot account details.</li>
+            <li>Never records your screen, keyboard or microphone.</li>
+            <li>Never looks at your files or other programs.</li>
+            <li>Never turns your camera on by itself. It always starts off.</li>
+          </ul>
+        </div>
+      </div>
+    </details>
+
+    <div class="caja">
+      <h2>Status</h2>
+      <div id="filas"></div>
+    </div>
+
+    <div class="caja">
+      <h2>Network</h2>
+      <div id="pruebas"><span class="chip">no check run yet</span></div>
+      <p id="consejo" hidden></p>
+      <div class="acciones">
+        <button class="btn" id="prueba" type="button">Run network check</button>
+        <button class="btn" id="firewall" type="button" hidden>Allow in Windows Firewall</button>
+        <span id="estadoFw" style="color: var(--dim); font-size: 12px"></span>
+      </div>
+    </div>
+
+    <div class="caja">
+      <h2>Data sent to the broadcast</h2>
+      <div id="paquetes"><span class="chip">nothing yet</span></div>
+    </div>
+
+    <div class="caja" id="cajaHistorial" hidden>
+      <h2>Problems earlier in this session</h2>
+      <ul id="historial"></ul>
+      <ul id="errores" hidden></ul>
+    </div>
+
+    <div class="caja">
+      <h2>Camera (private — only you turn it on)</h2>
+      <div class="camaraFila">
+        <button id="cam" type="button" aria-label="Camera">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M23 7l-7 5 7 5V7z" />
+            <rect x="1" y="5" width="15" height="14" rx="2" />
+            <line class="tachado" x1="2" y1="22" x2="22" y2="2" stroke="#8a8a92" />
+          </svg>
+        </button>
+        <div>
+          <div id="estadoCam">Camera off</div>
+          <div id="nota"></div>
+        </div>
+      </div>
+      <div id="camara-ajustes">
+        <select id="dispositivo" aria-label="Camera"></select>
+        <span id="permiso"></span>
+        <button class="btn" id="ajustesCam" type="button" hidden>Open Windows camera settings</button>
+      </div>
+    </div>
+
+    <div class="botones">
+      <button class="btn" id="copia" type="button">Copy diagnostics</button>
+      <button class="btn" id="logs" type="button">Open log folder</button>
+      <button class="btn btn--salir" id="salir" type="button" title="Closes Easy HUD completely. Closing this window only hides it to the system tray.">Quit Easy HUD</button>
+      <button class="btn" id="informe" type="button" title="Collects everything about this PC and what Overwolf delivers, and sends it to the operator so the problem can be found for certain.">Send full report to the operator</button>
+      <button class="btn" id="informeFichero" type="button">Save report to a file</button>
+      <span id="aviso"></span>
+    </div>
+
+    <script>
+      const $ = (id) => document.getElementById(id);
+      const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+      const seg = (ms) => (ms === null || ms === undefined ? 'never' : ms < 2000 ? 'just now' : `${Math.round(ms / 1000)} s ago`);
+
+      /* ── Estado del programa ── */
+      function filas(d) {
+        const dg = d.diag;
+        const r = d.red;
+        const lista = [];
+        lista.push([
+          'Easy HUD server',
+          r.conectada ? (r.oidoPorServidor || !r.latiendo ? 'ok' : 'aviso') : r.desdeMs >= 25000 ? 'mal' : 'aviso',
+          r.conectada ? 'Connected' : `Not connected — ${esc(r.ultimoFallo || 'trying…')}`,
+        ]);
+        lista.push([
+          'Match connection',
+          dg.datos === 'conectada' ? 'ok' : dg.datos === 'conectando' ? 'aviso' : 'off',
+          dg.datos === 'conectada' ? 'In the match' : dg.datos === 'conectando' ? 'Connecting…' : 'Not in a match yet (the operator calls you)',
+        ]);
+        lista.push([
+          'Overwolf events',
+          dg.gep === 'listo' ? 'ok' : dg.gep === 'esperando' ? 'aviso' : 'mal',
+          dg.gep === 'listo' ? `Ready${dg.gepVersion ? ' (' + esc(dg.gepVersion) + ')' : ''}` : dg.gep === 'esperando' ? 'Starting…' : 'Failed — restart Easy HUD',
+        ]);
+        lista.push([
+          'VALORANT',
+          dg.juegoDetectado ? 'ok' : dg.juegoAbierto ? 'mal' : 'off',
+          dg.juegoDetectado ? 'Open and detected' : dg.juegoAbierto ? 'Open but NOT detected' : 'Not open',
+        ]);
+        lista.push([
+          'Game events',
+          dg.eventosHace === null ? (dg.juegoDetectado ? 'aviso' : 'off') : dg.eventosHace < 600000 ? 'ok' : 'aviso',
+          dg.eventosHace === null ? 'None received yet' : `Last one ${seg(dg.eventosHace)}`,
+        ]);
+        lista.push(['Riot Client', dg.riot.startsWith('not signed') ? 'aviso' : dg.riot.includes('could not') ? 'mal' : 'ok', esc(dg.riot || '—')]);
+        return lista;
+      }
+
+      function pintaPruebas(d) {
+        const p = d.pruebaRed;
+        const caja = $('pruebas');
+        $('prueba').disabled = d.probandoRed;
+        $('prueba').textContent = d.probandoRed ? 'Checking…' : 'Run network check';
+        if (!p) {
+          caja.innerHTML = '<span class="chip">no check run yet</span>';
+        } else {
+          caja.innerHTML = p.pruebas
+            .map(
+              (x) =>
+                `<div class="fila"><i class="punto" data-e="${x.ok === null ? 'off' : x.ok ? 'ok' : 'mal'}"></i><span class="k">${esc(x.nombre)}</span><span class="v">${esc(x.detalle)}</span></div>`,
+            )
+            .join('');
+        }
+        const consejo = $('consejo');
+        const causa = p && p.causa ? p.causa.arreglo : null;
+        const TEXTOS = {
+          internet: 'There is no internet access (or DNS is failing). Check your connection.',
+          firewall: 'The server port is being blocked. Allow Easy HUD through the Windows Firewall (button below) and check your antivirus or VPN.',
+          proxy: 'The server answers but the real-time connection is cut. Disable any VPN/proxy and allow Easy HUD in your antivirus.',
+          servidor: 'The server is not accepting connections right now. Tell the operator.',
+        };
+        consejo.hidden = !causa;
+        consejo.textContent = causa ? TEXTOS[causa] : '';
+        // El botón del Firewall: cuando el problema es de puerto bloqueado o no hay regla.
+        $('firewall').hidden = !(causa === 'firewall' || causa === 'proxy');
+        $('estadoFw').textContent =
+          d.reglaFirewall === true ? 'Windows Firewall: Easy HUD is allowed' : d.reglaFirewall === false ? 'Windows Firewall: no rule for Easy HUD' : '';
+      }
+
+      function pintaEstado(d) {
+        document.body.dataset.nivel = d.alertas.some((a) => a.nivel === 'error') ? 'error' : d.alertas.length > 0 ? 'aviso' : 'ok';
+        $('resumen').textContent = d.alertas.length === 0 ? 'All good' : d.alertas.some((a) => a.nivel === 'error') ? 'Problem' : 'Warning';
+        $('version').textContent = 'v' + d.version;
+
+        // Quién eres: lo primero que ve el jugador.
+        if (d.jugador) {
+          $('nick').textContent = d.jugador;
+          $('subhola').textContent =
+            d.alertas.length === 0
+              ? 'Everything is working. Closing this window only hides it (it keeps running from the tray). To close it completely: “Quit Easy HUD” below, or tray icon → Quit.'
+              : 'There is something to check, see below.';
+        } else {
+          $('nick').textContent = 'Waiting for the Riot Client…';
+          $('subhola').textContent = 'Open the Riot Client and sign in, so Easy HUD knows who you are. Nothing else to do.';
+        }
+
+        $('problemas').innerHTML = d.alertas
+          .map((a) => `<div class="problema" data-nivel="${a.nivel}"><b>${esc(a.titulo)}</b><span>${esc(a.detalle)}</span></div>`)
+          .join('');
+        $('filas').innerHTML = filas(d)
+          .map(([k, e, v]) => `<div class="fila"><i class="punto" data-e="${e}"></i><span class="k">${k}</span><span class="v">${v}</span></div>`)
+          .join('');
+        pintaPruebas(d);
+        const env = Object.entries(d.diag.enviados);
+        $('paquetes').innerHTML = env.length
+          ? env.map(([k, n]) => `<span class="chip">${esc(k)} <b>${n}</b></span>`).join('')
+          : '<span class="chip">nothing yet — data is sent during a match</span>';
+        /* El historial: lo que saltó antes, ya resuelto o no, aparte de lo que falla AHORA (arriba). */
+        const hora = (t) => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        const hist = (d.historial || []).filter((h) => h.hasta !== null);
+        $('historial').innerHTML = hist
+          .map((h) => `<li>${hora(h.desde)} — ${esc(h.titulo)} <span class="dim">(fixed ${hora(h.hasta)})</span></li>`)
+          .join('');
+        const er = $('errores');
+        er.innerHTML = d.diag.errores.map((e) => `<li>${esc(e)}</li>`).join('');
+        er.hidden = d.diag.errores.length === 0;
+        $('cajaHistorial').hidden = hist.length === 0 && d.diag.errores.length === 0;
+      }
+
+      async function lee() {
+        try {
+          pintaEstado(await window.jugadorAPI.estado());
+        } catch {
+          $('resumen').textContent = 'No data';
+        }
+        try {
+          pintaCamara(await window.camaraAPI.estado());
+        } catch {
+          /* sin puente: se queda apagada */
+        }
+      }
+
+      /* ── Cámara ── */
+      const TEXTOS = {
+        apagada: ['Camera off', 'Nobody can see your camera. Press it when you want to appear on the broadcast.'],
+        encendida: ['Camera ready', 'It is on, but not live yet: wait for the broadcast to enable cameras.'],
+        directo: ['LIVE', 'Your camera is being broadcast now. Press the icon to turn it off.'],
+      };
+      function pintaCamara(e) {
+        const modo = !e || !e.permitida ? 'apagada' : e.enDirecto ? 'directo' : 'encendida';
+        document.body.dataset.modo = modo;
+        $('estadoCam').textContent = TEXTOS[modo][0];
+        $('nota').textContent = e && e.error ? '⚠ ' + e.error : TEXTOS[modo][1];
+        $('cam').setAttribute('aria-pressed', String(modo !== 'apagada'));
+        if (e && /permission|opened/i.test(e.error || '')) $('ajustesCam').hidden = false;
+      }
+      $('cam').addEventListener('click', async () => {
+        try {
+          pintaCamara(await window.camaraAPI.alterna());
+        } catch {
+          /* idem */
+        }
+      });
+
+      /* El permiso de la cámara se pide AQUÍ, nada más abrir el programa, y no a media
+         transmisión. Se abre un instante y se suelta; además da las etiquetas para elegir. */
+      const selector = $('dispositivo');
+      const permiso = $('permiso');
+      async function preparaCamara() {
+        try {
+          const s = await navigator.mediaDevices.getUserMedia({ video: true });
+          s.getTracks().forEach((t) => t.stop());
+          permiso.dataset.ok = 'si';
+          permiso.textContent = 'Camera permission granted';
+        } catch (e) {
+          permiso.dataset.ok = 'no';
+          permiso.textContent =
+            e && e.name === 'NotFoundError' ? 'No camera found' : 'Could not access the camera (check the Windows camera permission)';
+          if (!e || e.name !== 'NotFoundError') $('ajustesCam').hidden = false;
+        }
+        try {
+          const camaras = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'videoinput');
+          const elegida = await window.camaraAPI.dispositivo();
+          selector.innerHTML = '';
+          selector.add(new Option('Default camera', ''));
+          for (const c of camaras) selector.add(new Option(c.label || 'Camera', c.label));
+          selector.value = [...selector.options].some((o) => o.value === elegida) ? elegida : '';
+        } catch {
+          /* sin lista: queda la predeterminada */
+        }
+      }
+      selector.addEventListener('change', () => {
+        void window.camaraAPI.fijaDispositivo(selector.value);
+      });
+      void preparaCamara();
+      $('ajustesCam').addEventListener('click', () => {
+        void window.jugadorAPI.ajustesCamara();
+      });
+
+      /* ── Botones ── */
+      const avisa = (t) => {
+        $('aviso').textContent = t;
+        setTimeout(() => ($('aviso').textContent = ''), 4000);
+      };
+      $('copia').addEventListener('click', async () => {
+        try {
+          await window.jugadorAPI.copiaDiagnostico();
+          avisa('Copied — paste it in a message to the operator.');
+        } catch {
+          avisa('Could not copy.');
+        }
+      });
+      $('logs').addEventListener('click', () => {
+        void window.jugadorAPI.abreLogs();
+      });
+      $('informe').addEventListener('click', async () => {
+        $('informe').disabled = true;
+        $('informe').textContent = 'Collecting… (takes ~20 s)';
+        try {
+          const ok = await window.jugadorAPI.enviaInforme();
+          avisa(ok ? 'Report sent. The operator can read it now.' : 'Could not send it (no connection). Use “Save report to a file” and send the file.');
+        } catch {
+          avisa('The report could not be made.');
+        }
+        $('informe').disabled = false;
+        $('informe').textContent = 'Send full report to the operator';
+      });
+      $('informeFichero').addEventListener('click', async () => {
+        $('informeFichero').disabled = true;
+        try {
+          await window.jugadorAPI.guardaInforme();
+          avisa('Saved on your Desktop. Send that file to the operator.');
+        } catch {
+          avisa('The report could not be saved.');
+        }
+        $('informeFichero').disabled = false;
+      });
+      $('salir').addEventListener('click', async () => {
+        if (!confirm('Close Easy HUD completely?\n\nYou will stop appearing on the broadcast until you open it again.')) return;
+        try {
+          await window.jugadorAPI.salir();
+        } catch {
+          /* se está cerrando */
+        }
+      });
+      $('prueba').addEventListener('click', async () => {
+        $('prueba').disabled = true;
+        $('prueba').textContent = 'Checking…';
+        try {
+          await window.jugadorAPI.pruebaRed();
+        } catch {
+          avisa('The check could not run.');
+        }
+        lee();
+      });
+      $('firewall').addEventListener('click', async () => {
+        $('firewall').disabled = true;
+        try {
+          const r = await window.jugadorAPI.permiteFirewall();
+          avisa(r && r.ok ? 'Done — Easy HUD is allowed through the Windows Firewall.' : 'Not changed: ' + ((r && r.motivo) || 'cancelled'));
+        } catch {
+          avisa('Could not change the firewall.');
+        }
+        $('firewall').disabled = false;
+        lee();
+      });
+
+      lee();
+      setInterval(lee, 1500);
+    </script>
   </body>
 </html>

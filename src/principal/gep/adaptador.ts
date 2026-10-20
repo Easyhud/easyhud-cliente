@@ -44,6 +44,8 @@ export interface ReceptorGep {
    * recuperarse). Quien llama decide qué ofrecer al usuario. `intento` empieza en 1.
    */
   sinListo?(motivo: string, intento: number): void;
+  /** Un suceso del propio GEP (juego detectado o cerrado, privilegios, errores) para la caja negra. */
+  suceso?(tipo: string, detalle?: string): void;
   log(texto: string): void;
   error(texto: string, e?: unknown): void;
 }
@@ -61,6 +63,12 @@ export interface EstadoGep {
   readonly version: string;
   /** Si GEP detectó VALORANT alguna vez en esta sesión. */
   readonly detectado: boolean;
+  /** El paquete de GEP se cayó sin recuperación (o no pudo inicializarse). */
+  readonly caido: boolean;
+  /** El estado COMPLETO que tiene GEP del juego ahora (`getInfo`); rechaza si no hay juego o GEP no está listo. */
+  leeInfo(): Promise<unknown>;
+  /** Las features que GEP ofrece para VALORANT (`getFeatures`). */
+  leeFeatures(): Promise<string[]>;
   /** Deja de vigilar (al salir). */
   para(): void;
 }
@@ -91,6 +99,7 @@ export function vigilaPaquetes(paquetes: GestorPaquetes, r: ReceptorGep, o: Opci
   let intentos = 0;
   let relanzado = false;
   let parado = false;
+  let caido = false;
   let vigia: NodeJS.Timeout | null = null;
   const inicio = Date.now();
 
@@ -133,7 +142,10 @@ export function vigilaPaquetes(paquetes: GestorPaquetes, r: ReceptorGep, o: Opci
 
   paquetes.on('failed-to-initialize', (_e, nombre) => {
     r.log(`paquete de Overwolf sin inicializar: ${String(nombre)}`);
-    if (String(nombre) === 'gep' && !listo) programaVigia(0);
+    if (String(nombre) === 'gep' && !listo) {
+      caido = true;
+      programaVigia(0);
+    }
   });
   paquetes.on('package-update-pending', (_e, info) => {
     const nombres = Array.isArray(info) ? info.map((p) => p?.name) : [info as unknown];
@@ -142,9 +154,11 @@ export function vigilaPaquetes(paquetes: GestorPaquetes, r: ReceptorGep, o: Opci
   paquetes.on('updated', (_e, nombre, v) => r.log(`paquete de Overwolf actualizado: ${String(nombre)} ${String(v)}`));
   paquetes.on('crashed', (_e, recuperable) => {
     r.error(`un paquete de Overwolf se cayó (${recuperable ? 'se relanza solo' : 'sin recuperación'})`);
+    r.suceso?.('paquete-caido', recuperable ? 'recuperable' : 'sin recuperación');
     if (!recuperable) {
       listo = false;
       habilitado = false;
+      caido = true;
       r.estado('GEP Crashed', 'danger');
       programaVigia(0);
     }
@@ -157,9 +171,11 @@ export function vigilaPaquetes(paquetes: GestorPaquetes, r: ReceptorGep, o: Opci
    */
   const alListo = (v: string, tardio = false) => {
     listo = true;
+    caido = false;
     version = v;
     quitaVigia();
     r.log(`GEP listo, versión ${v} (${((Date.now() - inicio) / 1000).toFixed(1)} s tras engancharse)`);
+    r.suceso?.('gep-listo', v);
     if (v === '0.0.0') {
       r.error('GEP 0.0.0: Overwolf no reconoce la identidad de la app y NO entregará eventos (ver identidad.json)');
     }
@@ -173,6 +189,7 @@ export function vigilaPaquetes(paquetes: GestorPaquetes, r: ReceptorGep, o: Opci
       },
       (e: unknown) => {
         r.error('setRequiredFeatures falló', e);
+        r.suceso?.('setRequiredFeatures-fallo', e instanceof Error ? e.message : String(e));
         if (!tardio) {
           r.versionIncompatible(v);
           return;
@@ -186,13 +203,19 @@ export function vigilaPaquetes(paquetes: GestorPaquetes, r: ReceptorGep, o: Opci
     gep.on('game-detected', (e, id, nombreJuego) => {
       if (id !== VALORANT) return;
       r.log(`juego detectado: ${nombreJuego} (${id})`);
+      r.suceso?.('game-detected', String(nombreJuego));
+      // Al abrir VALORANT otra vez (tras cerrarlo) se vuelven a pedir las features: es idempotente y evita quedarse sin datos.
+      gep.setRequiredFeatures(VALORANT, FEATURES).catch((e: unknown) => r.log(`setRequiredFeatures al detectar el juego falló: ${e instanceof Error ? e.message : String(e)}`));
       e.enable();
       habilitado = true;
       detecciones += 1;
       if (detecciones >= 2) r.estado('Ready', 'info');
     });
     gep.on('game-exit', (_e: unknown, id: number) => {
-      if (id === VALORANT) r.log('GEP: VALORANT se cerró');
+      if (id === VALORANT) {
+        r.log('GEP: VALORANT se cerró');
+        r.suceso?.('game-exit');
+      }
     });
 
     const reparte = (clase: 'info' | 'evento', datos: unknown[]) => {
@@ -215,9 +238,11 @@ export function vigilaPaquetes(paquetes: GestorPaquetes, r: ReceptorGep, o: Opci
     });
     gep.on('elevated-privileges-required', (_e, id) => {
       r.log(`el juego ${id} corre como administrador: Easy HUD también debe hacerlo para recibir eventos`);
+      r.suceso?.('elevated-privileges-required', String(id));
     });
     gep.on('error', (_e: unknown, id: number, mensaje: string) => {
       r.error(`error de GEP (juego ${id}): ${mensaje}. GEP queda deshabilitado hasta la próxima detección`);
+      r.suceso?.('error', String(mensaje));
       habilitado = false;
     });
   };
@@ -251,6 +276,17 @@ export function vigilaPaquetes(paquetes: GestorPaquetes, r: ReceptorGep, o: Opci
     },
     get detectado() {
       return detecciones > 0;
+    },
+    get caido() {
+      return caido;
+    },
+    leeInfo() {
+      if (!listo) return Promise.reject(new Error('GEP no está listo'));
+      return paquetes.gep.getInfo(VALORANT);
+    },
+    leeFeatures() {
+      if (!listo) return Promise.reject(new Error('GEP no está listo'));
+      return paquetes.gep.getFeatures(VALORANT);
     },
     para() {
       parado = true;

@@ -13,6 +13,7 @@ import type { Coleccion, NombreColeccion } from './coleccion.ts';
 export const CANALES = {
   perfil: 'get-build-profile',
   urlObs: 'get-obs-url',
+  endpointDatos: 'get-endpoint-datos',
   conecta: 'conecta',
   arrancaOverlay: 'arranca-overlay-local',
   paraOverlay: 'para-overlay-local',
@@ -21,8 +22,10 @@ export const CANALES = {
   salaLocal: 'sala-local',
   estadoJuego: 'set-game-status',
   serieFin: 'serie-mapa-fin',
+  pausaVisual: 'pausa-visual',
   creaSala: 'crea-sala',
   llamaJugadores: 'llamar-jugadores',
+  colocaJugadores: 'coloca-jugadores',
   aplicaAtajos: 'aplica-atajos',
   suspendeAtajos: 'suspende-atajos',
   operador: 'operador-overlay',
