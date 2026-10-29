@@ -10,7 +10,7 @@
  * cola por clave, para que dos guardados seguidos no se pisen a medias.
  */
 
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 /** Las claves que existen. */
@@ -89,5 +89,28 @@ export class Almacen {
 
   borra(clave: string): void {
     rmSync(this.ruta(clave), { force: true });
+  }
+
+  /**
+   * Tras un cierre brusco (apagón, proceso matado) pueden quedar ficheros `*.tmp` a medio escribir. No
+   * estorban (la lectura nunca los mira: el fichero bueno se sustituye por renombrado atómico), pero se
+   * borran al arrancar para que no se acumulen. Devuelve cuántos quitó.
+   */
+  limpiaTemporales(): number {
+    let n = 0;
+    try {
+      for (const f of readdirSync(this.carpeta)) {
+        if (!f.endsWith('.tmp')) continue;
+        try {
+          rmSync(join(this.carpeta, f), { force: true });
+          n += 1;
+        } catch {
+          // Lo tiene otro proceso: se queda para la próxima.
+        }
+      }
+    } catch {
+      // Sin carpeta aún: nada que limpiar.
+    }
+    return n;
   }
 }

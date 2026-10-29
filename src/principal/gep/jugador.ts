@@ -15,7 +15,7 @@
  */
 
 import type { Accion, DatoGep } from './acciones.ts';
-import { analiza, habilidades, informeRonda, marcador, marcadorCompanero, marcadorVacio, sinNombre } from './transforma.ts';
+import { analiza, esEquipoObservador, habilidades, informeRonda, marcador, marcadorCompanero, marcadorVacio, sinNombre } from './transforma.ts';
 
 const REINTENTO_MS = 1500;
 /** Cada cuánto se repiten la vida y las habilidades aunque no cambien: si el servidor pierde la marca de «este jugador manda su vida» (pausa técnica, mapa nuevo, reconexión), se recupera sola. */
@@ -122,7 +122,7 @@ export class TraductorJugador {
         this.soyEspectador = false;
         return [];
       case 'team':
-        if (value === 'observer' && this.escena !== 'MainMenu') this.soyEspectador = true;
+        if (esEquipoObservador(value) && this.escena !== 'MainMenu') this.soyEspectador = true;
         return [];
       case 'observing':
         if (this.escena !== 'MainMenu') this.soyEspectador = true;

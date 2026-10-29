@@ -36,6 +36,7 @@ import { ResolutorRiot } from './riot/contexto.ts';
 import { FuentePuuid, leePuuidLocal, leeRiotIdLocal } from './riot/puuid-local.ts';
 import { uneASalaPorCodigo } from './riot/une-sala.ts';
 import { pideRegla, reglaExiste } from './sistema/firewall.ts';
+import { type Comprobacion, type ComprobadorArranque, textoComprobaciones } from './sistema/arranque.ts';
 import { buscaConflictos } from './sistema/conflictos.ts';
 import { leeEntornoDelPc } from './sistema/entorno.ts';
 import { todosLosProcesos, valorantAbierto } from './sistema/procesos.ts';
@@ -87,6 +88,8 @@ export interface EstadoJugadorUI {
   pruebaRed: ResultadoAutoprueba | null;
   reglaFirewall: boolean | null;
   probandoRed: boolean;
+  /** Las comprobaciones de arranque (lista vacía hasta la primera pasada). */
+  comprobaciones: Comprobacion[];
 }
 
 export class ModoJugador {
@@ -131,6 +134,8 @@ export class ModoJugador {
   private probandoRed = false;
   private reglaFirewall: boolean | null = null;
   private firewallOfrecido = false;
+  private comprobador: ComprobadorArranque | null = null;
+  private comprobaciones: Comprobacion[] = [];
 
   constructor(ctx: Contexto) {
     this.ctx = ctx;
@@ -297,7 +302,51 @@ export class ModoJugador {
       pruebaRed: this.pruebaRed,
       reglaFirewall: this.reglaFirewall,
       probandoRed: this.probandoRed,
+      comprobaciones: this.comprobaciones,
     };
+  }
+
+  /** Las comprobaciones de arranque (las crea `principal.ts`, que sabe de GEP y del perfil). */
+  fijaComprobador(c: ComprobadorArranque): void {
+    this.comprobador = c;
+  }
+
+  /** Repite las comprobaciones, las guarda para la ventana y las alertas, y las deja en el log. */
+  async ejecutaComprobaciones(): Promise<Comprobacion[]> {
+    if (this.comprobador === null) return this.comprobaciones;
+    try {
+      this.comprobaciones = await this.comprobador.ejecuta();
+      this.diag.fijaComprobaciones(this.comprobaciones);
+      log(`comprobaciones de arranque:\n${textoComprobaciones(this.comprobaciones)}`);
+    } catch (e) {
+      error('comprobaciones de arranque', e);
+    }
+    return this.comprobaciones;
+  }
+
+  /**
+   * «Reconnect everything»: un solo gesto (botón de la ventana o menú de la bandeja) que deja todo como
+   * recién abierto sin cerrar el programa: cierra la conexión de la partida, reconecta la presencia,
+   * vuelve a leer la sesión de Riot y repite la prueba de red y las comprobaciones. Si lo habían llamado a
+   * un grupo, vuelve a entrar sin esperar.
+   */
+  async reconectaTodo(): Promise<string[]> {
+    log('Reconnect everything: pedido por el jugador');
+    this.enlace.cierra('Disconnected');
+    this.presencia?.reconecta();
+    this.proximoIntentoGrupo = 0;
+    this.esperaGrupoMs = ESPERA_GRUPO_MS;
+    this.riot.olvida();
+    void this.fuente.sondea();
+    this.leeRiotId();
+    this.pruebaRed = null;
+    void this.ejecutaPruebaRed();
+    void this.ejecutaComprobaciones();
+    return [
+      'server connection reopened',
+      this.grupoRecordado !== '' ? 'rejoining the match group' : 'waiting for the organizer to call you',
+      'Riot session, network check and setup check repeated',
+    ];
   }
 
   /** Texto plano para pegar en un mensaje al operador. */
@@ -513,6 +562,11 @@ export class ModoJugador {
     pon(() => this.evalua(), ESTADO_MS);
     pon(() => void this.miraJuego(), JUEGO_MS);
     pon(() => void this.sondea(), SONDA_MS);
+    // Las comprobaciones de arranque: una vez pasado el arranque (GEP y Riot necesitan unos segundos) y luego
+    // cada 10 minutos, para que un problema que aparece más tarde (un programa que compite, VALORANT como admin) se vea.
+    const primera = setTimeout(() => void this.ejecutaComprobaciones(), 20_000);
+    primera.unref();
+    pon(() => void this.ejecutaComprobaciones(), 10 * 60_000);
     void this.miraJuego();
   }
 
@@ -564,6 +618,7 @@ export class ModoJugador {
     // Cuando la presencia vuelve, el servidor lo llama al grupo; si ya lo sabíamos, se entra sin esperar.
     this.proximoIntentoGrupo = 0;
     this.esperaGrupoMs = ESPERA_GRUPO_MS;
+    void this.ejecutaComprobaciones();
   }
 
   procesa(dato: DatoGep, clase: 'info' | 'evento' = 'info'): void {
@@ -619,9 +674,11 @@ export class ModoJugador {
       estadoPrograma(this.ctx, 'No Match ID', 'danger');
       return;
     }
+    // El nombre completo (con TAG): el de GEP si lo trae, y si no el del cliente de Riot o el puuid. Antes se
+    // mandaba vacío si GEP aún no había dado `player_name`, y el jugador salía sin nombre en el servidor.
     this.enlace.abre(normalizaIngesta(this.ctx.ingesta), {
       rol: 'jugador',
-      nombre: this.traductor.nombre,
+      nombre: this.nombreCompleto() || this.fuente.actual(),
       puuid: this.traductor.puuid || this.fuente.actual(),
       matchId,
     });
@@ -660,7 +717,7 @@ export class ModoJugador {
     if (this.ctx.ingesta === null) return;
     this.enlace.abre(normalizaIngesta(this.ctx.ingesta), {
       rol: 'jugador',
-      nombre: this.traductor.nombre || this.fuente.actual(),
+      nombre: this.nombreCompleto() || this.fuente.actual(),
       puuid: this.fuente.actual(),
       grupo,
     });
@@ -725,7 +782,14 @@ export class ModoJugador {
 
   private arrancaBucle(): void {
     this.paraBucle();
-    this.bucle = setInterval(() => this.ejecuta(this.traductor.tick()), BUCLE_MS);
+    this.bucle = setInterval(() => {
+      // Un fallo en una vuelta no debe repetirse 3 veces por segundo como excepción sin tratar: se anota y sigue.
+      try {
+        this.ejecuta(this.traductor.tick());
+      } catch (e) {
+        error('bucle de vida y compañeros', e);
+      }
+    }, BUCLE_MS);
   }
 
   private paraBucle(): void {

@@ -18,6 +18,8 @@ export const CANAL_JUGADOR_FIREWALL = 'jugador-firewall';
 export const CANAL_JUGADOR_AJUSTES_CAMARA = 'jugador-ajustes-camara';
 
 export const CANAL_JUGADOR_SALIR = 'jugador-salir';
+export const CANAL_JUGADOR_RECONECTA = 'jugador-reconecta';
+export const CANAL_JUGADOR_COMPROBACIONES = 'jugador-comprobaciones';
 
 export function registraIpcJugador(jugador: ModoJugador, carpetaLogs: string, salir: () => void): void {
   ipcMain.handle(CANAL_JUGADOR_ESTADO, () => jugador.estadoUI());
@@ -45,6 +47,10 @@ export function registraIpcJugador(jugador: ModoJugador, carpetaLogs: string, sa
   // La autoprueba de red (nombre, puerto, web, WebSocket) y el permiso del Firewall de Windows.
   ipcMain.handle(CANAL_JUGADOR_PRUEBA, () => jugador.ejecutaPruebaRed());
   ipcMain.handle(CANAL_JUGADOR_FIREWALL, () => jugador.permiteFirewall());
+  // «Reconnect everything»: un solo botón que lo reabre todo (servidor, presencia, grupo) y repite las comprobaciones.
+  ipcMain.handle(CANAL_JUGADOR_RECONECTA, () => jugador.reconectaTodo());
+  // Las comprobaciones de arranque, a petición (botón «Check my setup»).
+  ipcMain.handle(CANAL_JUGADOR_COMPROBACIONES, () => jugador.ejecutaComprobaciones());
   // Los ajustes de privacidad de la cámara de Windows (si el permiso está denegado).
   ipcMain.handle(CANAL_JUGADOR_AJUSTES_CAMARA, () => shell.openExternal('ms-settings:privacy-webcam').then(() => true, () => false));
 }

@@ -25,6 +25,7 @@ export const CANALES = {
   pausaVisual: 'pausa-visual',
   creaSala: 'crea-sala',
   llamaJugadores: 'llamar-jugadores',
+  reconectaTodo: 'reconecta-todo',
   colocaJugadores: 'coloca-jugadores',
   aplicaAtajos: 'aplica-atajos',
   suspendeAtajos: 'suspende-atajos',

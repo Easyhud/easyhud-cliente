@@ -1,6 +1,10 @@
 /**
  * Detecta, mirando la pantalla del juego, cuándo VALORANT está en un tiempo muerto o pausa técnica.
  *
+ * DESACTIVADO POR DEFECTO (decisión del usuario, 2026-10-22): la pausa y los tiempos muertos se ponen a mano, con los
+ * botones del panel o los atajos de teclado. Este detector queda como experimento: sólo se enciende con la variable de
+ * entorno EASY_PAUSA_VISUAL=1 al arrancar el observador, y nunca se ha comprobado con una pausa real.
+ *
  * En cada pausa el juego se pone EN GRIS (pierde todo el color menos el HUD). Eso se puede ver en una
  * miniatura minúscula de la pantalla: casi ningún píxel con color. La detección sólo mira esa miniatura
  * (96×54) 10 veces por segundo (sólo en la compra) en el PC del OBSERVADOR; no guarda nada ni sale nada de ahí. Jamás se usa

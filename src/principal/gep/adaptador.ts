@@ -55,6 +55,10 @@ export interface OpcionesGep {
   esperaListoMs?: number;
   /** Tras avisar, cada cuánto se vuelve a avisar si sigue sin llegar (por defecto 120 s). */
   reavisoMs?: number;
+  /** Cuántas veces se intenta fijar las features antes de dar la versión de GEP por incompatible (por defecto 3). */
+  reintentosFeatures?: number;
+  /** Espera base entre intentos de fijar las features; crece con cada intento (por defecto 2 s). */
+  esperaReintentoFeaturesMs?: number;
 }
 
 /** Lo que se puede preguntar al adaptador en marcha. */
@@ -183,22 +187,40 @@ export function vigilaPaquetes(paquetes: GestorPaquetes, r: ReceptorGep, o: Opci
 
     const gep = paquetes.gep;
     gep.removeAllListeners();
-    gep.setRequiredFeatures(VALORANT, FEATURES).then(
-      () => {
-        if (tardio && listo) r.listo(v);
-      },
-      (e: unknown) => {
-        r.error('setRequiredFeatures falló', e);
-        r.suceso?.('setRequiredFeatures-fallo', e instanceof Error ? e.message : String(e));
-        if (!tardio) {
-          r.versionIncompatible(v);
-          return;
-        }
-        listo = false;
-        r.log('GEP no estaba listo de verdad: se sigue esperando su "ready"');
-        programaVigia(o.esperaListoMs ?? 45_000);
-      },
-    );
+    /* Un fallo puntual al fijar las features (GEP aún arrancando) no es «versión incompatible»: se
+       reintenta unas veces con espera creciente antes de rendirse. El original no reintentaba y avisaba
+       de versión incompatible al primer fallo.
+       Adaptado de ValoSpectra/Spectra-Client (GPL-3.0) — services/gepService.ts (setRequiredFeaturesValorant) */
+    const maxIntentos = Math.max(1, o.reintentosFeatures ?? 3);
+    const fijaFeatures = (intento: number): void => {
+      gep.setRequiredFeatures(VALORANT, FEATURES).then(
+        () => {
+          if (intento > 1) r.log(`setRequiredFeatures correcto al intento ${intento}`);
+          if (tardio && listo) r.listo(v);
+        },
+        (e: unknown) => {
+          const motivo = e instanceof Error ? e.message : String(e);
+          r.error(`setRequiredFeatures falló (intento ${intento}/${maxIntentos})`, e);
+          r.suceso?.('setRequiredFeatures-fallo', motivo);
+          if (parado) return;
+          if (intento < maxIntentos) {
+            const t = setTimeout(() => {
+              if (!parado) fijaFeatures(intento + 1);
+            }, (o.esperaReintentoFeaturesMs ?? 2000) * intento);
+            t.unref?.();
+            return;
+          }
+          if (!tardio) {
+            r.versionIncompatible(v);
+            return;
+          }
+          listo = false;
+          r.log('GEP no estaba listo de verdad: se sigue esperando su "ready"');
+          programaVigia(o.esperaListoMs ?? 45_000);
+        },
+      );
+    };
+    fijaFeatures(1);
 
     gep.on('game-detected', (e, id, nombreJuego) => {
       if (id !== VALORANT) return;

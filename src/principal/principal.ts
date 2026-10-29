@@ -19,7 +19,7 @@ import { app, BrowserWindow, clipboard, dialog, globalShortcut, Menu, Notificati
 import { Almacen } from './almacen.ts';
 import { Bandeja } from './bandeja.ts';
 import { creaColecciones } from './coleccion.ts';
-import { dialogo, estadoPrograma, type Contexto } from './contexto.ts';
+import { dialogo, estadoPrograma, muestraDialogo, type Contexto } from './contexto.ts';
 import { iniciaGep, type EstadoGep } from './gep/adaptador.ts';
 import { registraIpc } from './ipc.ts';
 import { registraIpcJugador } from './jugador-ipc.ts';
@@ -29,13 +29,17 @@ import { ModoObservador } from './modo-observador.ts';
 import { cargaPerfil, INGESTA_POR_DEFECTO, rolEfectivo } from './perfil.ts';
 import { capturaErrores, configuraRegistro, error, log } from './registro.ts';
 import { PROYECTO, rutaIcono } from './rutas.ts';
+import { normalizaIngesta } from './urls.ts';
 import { Recuerdos } from './secreto.ts';
 import { compruebaActualizacion, URL_ULTIMA } from './sistema/actualizaciones.ts';
+import { ComprobadorArranque } from './sistema/arranque.ts';
+import { depsDelPc } from './sistema/arranque-pc.ts';
 import { eligeDirectorioDatos } from './sistema/datos.ts';
 import { compruebaEventos } from './sistema/estado-eventos.ts';
-import { acusa, escribeFicha, esperaAcuse, leeFicha } from './sistema/instancia.ts';
+import { LimitadorRecargas } from './sistema/robustez.ts';
+import { acusa, escribeFicha, esperaAcuse, fichaEsDeEasyHud, leeFicha } from './sistema/instancia.ts';
 import { buscaOverwolf, cierraProceso } from './sistema/overwolf-nativo.ts';
-import { buscaRestos, cierraArbol, valorantAbierto, vivo, type Yo } from './sistema/procesos.ts';
+import { buscaRestos, cierraArbol, todosLosProcesos, valorantAbierto, vivo, type Yo } from './sistema/procesos.ts';
 import { creaVentanaJugador, creaVentanaObservador } from './ventanas.ts';
 
 const desarrollo = process.argv.includes('--development');
@@ -102,7 +106,10 @@ async function segundaInstancia(desde: number): Promise<void> {
   }
   await app.whenReady();
   const pids = new Set((await buscaRestos(yo)).map((p) => p.pid));
-  if (ficha !== null && ficha.pid !== process.pid && vivo(ficha.pid)) pids.add(ficha.pid);
+  // El PID de la ficha sólo cuenta si sigue siendo Easy HUD (los PID se reutilizan tras un cierre brusco).
+  if (ficha !== null && ficha.pid !== process.pid && vivo(ficha.pid) && fichaEsDeEasyHud(await todosLosProcesos(), ficha.pid, process.execPath)) {
+    pids.add(ficha.pid);
+  }
   const { response } = await dialog.showMessageBox({
     type: 'warning',
     title: 'Easy HUD - Already running',
@@ -137,6 +144,8 @@ function arranca(): void {
   const puertoLocal = Number(process.env.EASY_PUERTO_LOCAL) || 5310;
 
   const almacen = new Almacen(datos.carpeta);
+  const restosTmp = almacen.limpiaTemporales();
+  if (restosTmp > 0) log(`se borraron ${restosTmp} fichero(s) temporal(es) de un cierre brusco anterior`);
   let principal: BrowserWindow | null = null;
   const ctx: Contexto = {
     version,
@@ -173,9 +182,41 @@ function arranca(): void {
     principal.show();
     principal.focus();
   };
-  const bandeja: Bandeja = new Bandeja(rutaIcono(app.isPackaged), muestra, sal, () =>
-    jugador
+  /**
+   * «Quit» de la bandeja. En directo (el observador conectado y alimentando la transmisión) pide confirmación: un
+   * clic perdido en el menú no debe dejar el overlay sin datos. Fuera de directo, sale sin preguntar.
+   */
+  const salConConfirmacion = async () => {
+    if (observador && !(await observador.confirmaCierre(principal))) {
+      log('salida cancelada por el operador (estaba en directo)');
+      return;
+    }
+    sal();
+  };
+  /** «Reconnect everything» del observador (Ctrl+Alt+R y la bandeja): reabre todo y lo cuenta. */
+  const reconectaObservador = async () => {
+    if (!observador) return;
+    const hecho = await observador.reconectaTodo();
+    dialogo(ctx, 'Easy HUD - Reconnect everything', hecho.map((h) => `• ${h}`).join('\n') + '\n\nChecking your setup again in a few seconds…', 'info');
+    setTimeout(() => void observador.ejecutaComprobaciones('problemas'), 8000).unref();
+  };
+  const bandeja: Bandeja = new Bandeja(rutaIcono(app.isPackaged), muestra, () => void salConConfirmacion(), () =>
+    observador
       ? [
+          { label: 'Reconnect everything (Ctrl+Alt+R)', click: () => void reconectaObservador() },
+          { label: 'Run setup check', click: () => void observador.ejecutaComprobaciones('siempre') },
+          { type: 'separator' },
+        ]
+      : jugador
+      ? [
+          { label: 'Reconnect everything', click: () => void jugador.reconectaTodo() },
+          {
+            label: 'Run setup check',
+            click: () => {
+              muestra();
+              void jugador.ejecutaComprobaciones();
+            },
+          },
           {
             label: 'Camera (visible on the broadcast)',
             type: 'checkbox',
@@ -199,6 +240,54 @@ function arranca(): void {
         ]
       : [],
   );
+  /**
+   * La ventana del panel (o del jugador) no puede quedarse en blanco o congelada en directo sin salida:
+   *   · si su proceso de render se cae, se recarga sola (el panel vuelve a leer su sesión y se reconecta);
+   *   · si se cae una y otra vez, se deja de recargar y se avisa (antes sería un bucle de recargas);
+   *   · si deja de responder, se ofrece esperar o reiniciar la ventana (el programa, el overlay y las teclas
+   *     siguen funcionando mientras tanto: viven en otro proceso).
+   */
+  const vigilaVentana = (v: BrowserWindow, nombre: string) => {
+    const limitador = new LimitadorRecargas();
+    v.webContents.on('render-process-gone', (_e, d) => {
+      const accion = limitador.registra(d.reason, Date.now());
+      log(`ventana del ${nombre}: el proceso de render murió (${d.reason}): ${accion}`);
+      if (accion === 'recarga') {
+        setTimeout(() => {
+          if (!v.isDestroyed()) v.reload();
+        }, 1000);
+      } else if (accion === 'rinde') {
+        dialogo(
+          ctx,
+          'Easy HUD - Window problem',
+          'The Easy HUD window keeps crashing. The overlay and the hotkeys keep working in the background. Use "Reconnect everything" from the tray icon, or close and open Easy HUD again.',
+          'error',
+        );
+      }
+    });
+    let preguntando = false;
+    v.on('unresponsive', () => {
+      if (preguntando) return;
+      preguntando = true;
+      log(`ventana del ${nombre}: no responde`);
+      void muestraDialogo(ctx, {
+        type: 'warning',
+        title: 'Easy HUD - Not responding',
+        message: 'The Easy HUD window is not responding.',
+        detail: 'Wait a few seconds first. If it stays frozen, restart the window: the overlay and the hotkeys keep working.',
+        buttons: ['Keep waiting', 'Restart window'],
+        defaultId: 0,
+        cancelId: 0,
+      })
+        .then((respuesta) => {
+          if (respuesta === 1 && !v.isDestroyed()) v.webContents.forcefullyCrashRenderer();
+        })
+        .catch((e) => error('diálogo de ventana sin respuesta', e))
+        .finally(() => {
+          preguntando = false;
+        });
+    });
+  };
   /** Reinicia la app entera (la instancia nueva espera a que ésta suelte el candado). */
   const reinicia = () => {
     log('reinicio de Easy HUD pedido por el usuario');
@@ -248,6 +337,9 @@ function arranca(): void {
   });
 
   let gep: EstadoGep | null = null;
+  /** Estado de los eventos de Overwolf para VALORANT (`null` = bien o sin dato) y si GEP pidió más privilegios. */
+  let eventosOverwolf: number | null = null;
+  let privilegiosRequeridos = false;
   app.on('will-quit', () => {
     log('saliendo (will-quit)');
     gep?.para();
@@ -284,6 +376,7 @@ function arranca(): void {
     if (observador) {
       const v = creaVentanaObservador(almacen, desarrollo);
       principal = v;
+      vigilaVentana(v, 'observador');
       v.once('ready-to-show', () => {
         if (!oculto) v.show();
       });
@@ -318,10 +411,7 @@ function arranca(): void {
         if (primeraVez) void almacen.escribe('bienvenida', { vista: true, version }).catch(() => undefined);
       });
       // Si la ventana se cuelga o se cae, se recarga sola en vez de dejarse en blanco.
-      v.webContents.on('render-process-gone', (_e, d) => {
-        log(`ventana del jugador: el proceso de render murió (${d.reason}); se recarga`);
-        if (!v.isDestroyed()) setTimeout(() => v.reload(), 1000);
-      });
+      vigilaVentana(v, 'jugador');
       bandeja.asegura();
       v.on('minimize', () => {
         if (bandeja.existe) v.hide();
@@ -378,6 +468,10 @@ function arranca(): void {
     if (observador && !globalShortcut.register('Control+Alt+O', () => observador.operador.alterna())) {
       log('no se pudo registrar Control+Alt+O');
     }
+    /* «Reconnect everything»: un gesto que lo reabre todo sin cerrar el programa (sustituye al reinicio a mano). */
+    if (observador && !globalShortcut.register('Control+Alt+R', () => void reconectaObservador())) {
+      log('no se pudo registrar Control+Alt+R (Reconnect everything): queda el menú de la bandeja');
+    }
 
     /* 4.5 GEP. Cambio: se engancha ANTES de la comprobación de actualizaciones.
        Antes iba después, y esa comprobación puede tardar (8 s de plazo) o
@@ -394,6 +488,27 @@ function arranca(): void {
         recuperando = false;
       }
     };
+    /* Comprobaciones de arranque (ver `sistema/arranque.ts`): se lanzan una vez GEP está listo (o a los 35 s
+       si no llega) y el observador sólo ve un diálogo si hay algo que arreglar. */
+    const comprobador = new ComprobadorArranque(
+      depsDelPc({
+        rol,
+        version,
+        ingesta: ingesta === null ? null : normalizaIngesta(ingesta),
+        gep: () => gep,
+        eventosOverwolf: () => eventosOverwolf,
+        privilegiosRequeridos: () => privilegiosRequeridos,
+      }),
+    );
+    observador?.fijaComprobador(comprobador);
+    jugador?.fijaComprobador(comprobador);
+    let comprobacionesLanzadas = false;
+    const lanzaComprobaciones = () => {
+      if (comprobacionesLanzadas) return;
+      comprobacionesLanzadas = true;
+      void (observador ? observador.ejecutaComprobaciones('problemas') : jugador?.ejecutaComprobaciones());
+    };
+    setTimeout(lanzaComprobaciones, 35_000).unref();
     let deteccionRevisada = false;
     const compruebaDeteccion = async () => {
       if (deteccionRevisada || gep === null || !gep.listo || gep.detectado) return;
@@ -408,6 +523,8 @@ function arranca(): void {
       listo: (versionGep) => {
         estadoPrograma(ctx, ctx.recuerdos.secretoVigente() !== '' ? 'Ready (Reconnect Available)' : 'Ready', 'info');
         setTimeout(() => principal?.setTitle(`Easy HUD | Ready (GEP: ${versionGep}, Easy HUD: ${version})`), 300);
+        // GEP listo: unos segundos para que se vean VALORANT y el cliente de Riot, y se comprueba todo.
+        setTimeout(lanzaComprobaciones, 8000).unref();
         // VALORANT abierto pero GEP no lo ve: se deja escrito y se ofrece reiniciar (una vez por sesión).
         setTimeout(() => void compruebaDeteccion(), 60_000).unref();
       },
@@ -417,7 +534,10 @@ function arranca(): void {
       },
       info: (d) => (observador ? observador.info(d) : jugador?.procesa(d, 'info')),
       evento: (d) => (observador ? observador.evento(d) : jugador?.procesa(d, 'evento')),
-      suceso: (tipo, detalle) => (observador ? observador.sucesoGep(tipo) : jugador?.sucesoGep(tipo, detalle)),
+      suceso: (tipo, detalle) => {
+        if (tipo === 'elevated-privileges-required') privilegiosRequeridos = true;
+        return observador ? observador.sucesoGep(tipo) : jugador?.sucesoGep(tipo, detalle);
+      },
       versionIncompatible: (v) =>
         dialogo(
           ctx,
@@ -438,7 +558,13 @@ function arranca(): void {
     }
 
     void avisaOverwolfNativo(ctx);
-    setTimeout(() => void compruebaEventos(rol === 'jugador', log), 2500);
+    setTimeout(
+      () =>
+        void compruebaEventos(rol === 'jugador', log).then((estado) => {
+          eventosOverwolf = estado ?? null;
+        }),
+      2500,
+    );
 
 
     /* 4.8 Presencia del jugador. */
@@ -487,8 +613,7 @@ async function hayQueActualizar(ctx: Contexto): Promise<boolean> {
         defaultId: 0,
         cancelId: 1,
       };
-      const v = ctx.ventana();
-      const { response } = await (v ? dialog.showMessageBox(v, opciones) : dialog.showMessageBox(opciones));
+      const response = await muestraDialogo(ctx, opciones);
       if (response !== 0) return false;
       await shell.openExternal(URL_ULTIMA);
       return true;
@@ -507,8 +632,7 @@ async function avisaOverwolfNativo(ctx: Contexto): Promise<void> {
       defaultId: 0,
       cancelId: 1,
     };
-    const v = ctx.ventana();
-    const { response } = await (v ? dialog.showMessageBox(v, opciones) : dialog.showMessageBox(opciones));
+    const response = await muestraDialogo(ctx, opciones);
     if (response !== 0) continue;
     if (!(await cierraProceso(pid))) {
       dialogo(
@@ -549,8 +673,7 @@ async function ofreceRecuperarGep(ctx: Contexto, motivo: string, reinicia: () =>
     defaultId: 0,
     cancelId: 1,
   };
-  const v = ctx.ventana();
-  const { response } = await (v && !v.isDestroyed() ? dialog.showMessageBox(v, opciones) : dialog.showMessageBox(opciones));
+  const response = await muestraDialogo(ctx, opciones);
   if (response !== 0) {
     log('recuperación de GEP: el usuario sigue esperando');
     return;

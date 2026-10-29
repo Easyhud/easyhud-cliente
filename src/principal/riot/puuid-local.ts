@@ -42,6 +42,34 @@ export async function leePuuidLocal(localAppData = process.env.LOCALAPPDATA ?? '
 }
 
 /**
+ * Estado del cliente de Riot local para las comprobaciones de arranque:
+ * `cerrado` (no hay lockfile o no responde), `sin-sesion` (responde pero no hay cuenta) u `ok`.
+ */
+export async function estadoClienteRiot(localAppData = process.env.LOCALAPPDATA ?? ''): Promise<'ok' | 'sin-sesion' | 'cerrado'> {
+  if (localAppData === '') return 'cerrado';
+  let bloqueo: ReturnType<typeof leeLockfile>;
+  try {
+    bloqueo = leeLockfile(await readFile(join(localAppData, 'Riot Games', 'Riot Client', 'Config', 'lockfile'), 'utf8'));
+  } catch {
+    return 'cerrado';
+  }
+  if (bloqueo === null) return 'cerrado';
+  // El lockfile puede quedar de una sesión anterior: si el cliente no contesta, está cerrado.
+  const auth = Buffer.from(`riot:${bloqueo.clave}`).toString('base64');
+  try {
+    const r = await pide(`${bloqueo.protocolo}://127.0.0.1:${bloqueo.puerto}/entitlements/v1/token`, {
+      cabeceras: { Authorization: `Basic ${auth}` },
+      inseguro: true,
+      esperaMs: 3000,
+    });
+    if (r.estado === 200 && typeof objeto(r.json()).subject === 'string') return 'ok';
+    return r.estado === 0 ? 'cerrado' : 'sin-sesion';
+  } catch {
+    return 'cerrado';
+  }
+}
+
+/**
  * El Riot ID (`Nombre#TAG`) de la sesión abierta, o `''`. Sirve para la cámara:
  * se publica con ese nombre aunque GEP no lo dé con el TAG.
  */

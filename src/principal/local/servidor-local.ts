@@ -19,6 +19,7 @@ import { createServer, type Server as ServidorHttp } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { Server, type Socket as SocketOverlay } from 'socket.io';
 import { io as conectaArriba, type Socket as SocketArriba } from 'socket.io-client';
+import { conLimite } from '../sistema/robustez.ts';
 import { resuelveRuta, tipoDe } from './estaticos.ts';
 
 export interface Credenciales {
@@ -32,6 +33,11 @@ export interface OpcionesServidorLocal {
   raiz: string;
   puerto: number;
   log: (texto: string) => void;
+  /** El puerto no se pudo abrir tras los reintentos: texto para el operador (qué pasó y qué hacer). */
+  alFallar?: (texto: string) => void;
+  /** Intentos de abrir el puerto (por defecto 4) y espera entre ellos (por defecto 1 s). */
+  intentosPuerto?: number;
+  esperaPuertoMs?: number;
   /** Sólo pruebas: opciones extra del socket de arriba. */
   opcionesArriba?: Record<string, unknown>;
 }
@@ -93,23 +99,35 @@ export class ServidorLocal {
     this.io = io;
     http.on('error', (e) => this.o.log(`servidor local: error ${e.message}`));
 
-    await new Promise<void>((resolve) => {
-      const falla = (e: Error) => {
-        // Sólo se registra (puerto ocupado, etc.); el siguiente `arranca` lo reintenta.
-        this.o.log(`servidor local: no arranca en ${this.o.puerto} (${e.message})`);
-        io.close();
-        this.http = null;
-        this.io = null;
-        resolve();
-      };
-      http.once('error', falla);
-      http.listen(this.o.puerto, '127.0.0.1', () => {
-        http.off('error', falla);
-        this.puertoReal = (http.address() as AddressInfo).port;
-        this.o.log(`servidor local en http://localhost:${this.puertoReal}/ (raíz ${this.o.raiz})`);
-        resolve();
+    // Tras un cierre brusco el puerto puede tardar un instante en quedar libre: se reintenta unas veces
+    // antes de dar el aviso (que sí llega al operador: sin este puerto OBS no ve el overlay).
+    const intentos = Math.max(1, this.o.intentosPuerto ?? 4);
+    let fallo = '';
+    for (let n = 1; n <= intentos; n++) {
+      fallo = await new Promise<string>((resolve) => {
+        const falla = (e: Error) => resolve(e.message);
+        http.once('error', falla);
+        http.listen(this.o.puerto, '127.0.0.1', () => {
+          http.off('error', falla);
+          resolve('');
+        });
       });
-    });
+      if (fallo === '') break;
+      this.o.log(`servidor local: no arranca en ${this.o.puerto} (${fallo}), intento ${n}/${intentos}`);
+      if (n < intentos) await new Promise((r) => setTimeout(r, this.o.esperaPuertoMs ?? 1000));
+    }
+    if (fallo !== '') {
+      io.close();
+      this.http = null;
+      this.io = null;
+      // El siguiente `arranca` lo reintenta; mientras tanto se avisa de qué hacer.
+      this.o.alFallar?.(
+        `Port ${this.o.puerto} is already in use (${fallo}). Another Easy HUD may still be running in the background: close it from the Task Manager, then press Ctrl+Alt+R (Reconnect everything).`,
+      );
+      return;
+    }
+    this.puertoReal = (http.address() as AddressInfo).port;
+    this.o.log(`servidor local en http://localhost:${this.puertoReal}/ (raíz ${this.o.raiz})`);
   }
 
   async para(): Promise<void> {
@@ -121,10 +139,14 @@ export class ServidorLocal {
     this.io = null;
     this.http = null;
     this.puertoReal = 0;
-    if (io !== null) await new Promise<void>((r) => io.close(() => r()));
+    // Una conexión que no se cierra sola (OBS con la página abierta) dejaba el cierre esperando para siempre y,
+    // con él, «Reconnect everything»: se cortan las conexiones a la vez y se espera como mucho unos segundos.
+    const cierreIo = io !== null ? new Promise<void>((r) => io.close(() => r())) : Promise.resolve();
+    http?.closeAllConnections?.();
+    if (!(await conLimite(cierreIo, 3000))) this.o.log('servidor local: el cierre de socket.io tardó más de 3 s, se sigue');
     if (http !== null && http.listening) {
       http.closeAllConnections();
-      await new Promise<void>((r) => http.close(() => r()));
+      if (!(await conLimite(new Promise<void>((r) => http.close(() => r())), 3000))) this.o.log('servidor local: el cierre http tardó más de 3 s, se sigue');
     }
     this.o.log('servidor local parado');
   }

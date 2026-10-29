@@ -80,6 +80,9 @@ export function logonJugador(d: DatosLogonJugador) {
 export function motivoAmable(reason: unknown): string {
   const r = typeof reason === 'string' ? reason : '';
   const m = r.toLowerCase();
+  if (m.includes('invalid packet')) {
+    return 'The server did not understand what Easy HUD sent. Update Easy HUD to the latest version and try again. If it keeps happening, tell the organizer.';
+  }
   if (m.includes('still live') || (m.includes('exists') && m.includes('group code'))) {
     return (
       "There's already a live broadcast on this group code.\n\n" +
@@ -94,6 +97,48 @@ export function motivoAmable(reason: unknown): string {
   if (m.includes('expired')) return 'Your broadcast permit has expired. Sign in again to renew it.';
   if (m.includes('invalid')) return "The server didn't accept these credentials. Check your account and try again.";
   return r === '' ? 'Connection failed.' : r;
+}
+
+/**
+ * Un fallo al ABRIR la conexión (antes del logon), dicho como «qué pasó + qué hacer». `inspeccion` es el
+ * texto del error (mensaje, código y causas). Devuelve `null` si no se reconoce: entonces no se molesta
+ * con un diálogo (el estado de la ventana ya dice «Connection Failed»).
+ */
+export function motivoDeFalloDeRed(inspeccion: string): { titulo: string; texto: string; servidorCaido: boolean } | null {
+  const t = inspeccion.toLowerCase();
+  if (t.includes('econnrefused')) {
+    return {
+      titulo: 'Server not reachable',
+      texto:
+        'The Easy HUD server is not accepting connections (it may be restarting). Easy HUD keeps trying by itself. ' +
+        'If it does not connect in a minute, tell the organizer.',
+      servidorCaido: true,
+    };
+  }
+  if (t.includes('enotfound') || t.includes('eai_again') || t.includes('enetunreach') || t.includes('ehostunreach')) {
+    return {
+      titulo: 'No internet connection',
+      texto: 'This PC cannot reach the Easy HUD server (no internet or DNS problem). Check your connection or VPN; Easy HUD keeps trying by itself.',
+      servidorCaido: false,
+    };
+  }
+  if (t.includes('etimedout') || t.includes('timeout') || t.includes('timed out')) {
+    return {
+      titulo: 'The server does not answer',
+      texto:
+        'The connection to the Easy HUD server timed out. A firewall, antivirus or VPN may be blocking Easy HUD, ' +
+        'or the connection is very slow. Easy HUD keeps trying by itself.',
+      servidorCaido: false,
+    };
+  }
+  if (t.includes('certificate') || t.includes('cert_') || t.includes('ssl')) {
+    return {
+      titulo: 'Secure connection failed',
+      texto: 'The secure connection to the server could not be established. Check the PC date and time, and any antivirus that inspects web traffic.',
+      servidorCaido: false,
+    };
+  }
+  return null;
 }
 
 /** Decodifica una carga recibida (cadena JSON u objeto). `null` si no es un objeto. */

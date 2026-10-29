@@ -61,6 +61,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   creaSalaTorneo: () => ipcRenderer.invoke('crea-sala'),
   llamaJugadores: (puuids: unknown) => ipcRenderer.invoke('llamar-jugadores', puuids ?? []),
+  reconectaTodo: () => ipcRenderer.invoke('reconecta-todo'),
   colocaJugadores: (lista: unknown) => ipcRenderer.send('coloca-jugadores', lista ?? []),
 
   dbTeamsList: equipos.list,

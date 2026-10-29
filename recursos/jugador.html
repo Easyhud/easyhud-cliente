@@ -358,6 +358,12 @@
 
     <div id="problemas"></div>
 
+    <details class="caja" id="cajaComprobaciones">
+      <summary>Setup check</summary>
+      <div id="comprobaciones"><span class="chip">not run yet — it runs by itself a few seconds after opening</span></div>
+      <div class="botones"><button class="btn" id="compruebaYa" type="button">Check my setup now</button></div>
+    </details>
+
     <details class="caja" open>
       <summary>What Easy HUD does</summary>
       <div class="columnas">
@@ -368,6 +374,7 @@
             <li>Sends it to the tournament’s broadcast server so the stream can show it.</li>
             <li>Reads your <b>Riot ID</b> from the Riot Client so the operator can find you, and joins the lobby code when the operator calls you.</li>
             <li>Shows your camera on stream <b>only if you press the camera button</b>.</li>
+            <li>Opens with the <b>Windows permission prompt</b> (administrator). It is only so Overwolf can read VALORANT even when VALORANT itself runs as administrator; it does nothing else with it.</li>
           </ul>
         </div>
         <div class="no">
@@ -432,6 +439,7 @@
     </div>
 
     <div class="botones">
+      <button class="btn" id="reconecta" type="button" title="Reopens the connection to the server and to the match, and repeats the checks. Use it when something looks stuck, instead of closing the program.">Reconnect everything</button>
       <button class="btn" id="copia" type="button">Copy diagnostics</button>
       <button class="btn" id="logs" type="button">Open log folder</button>
       <button class="btn btn--salir" id="salir" type="button" title="Closes Easy HUD completely. Closing this window only hides it to the system tray.">Quit Easy HUD</button>
@@ -534,6 +542,22 @@
           .map(([k, e, v]) => `<div class="fila"><i class="punto" data-e="${e}"></i><span class="k">${k}</span><span class="v">${v}</span></div>`)
           .join('');
         pintaPruebas(d);
+        // La lista de comprobaciones de arranque: lo que va bien, y para lo que no, qué pasa y qué hacer.
+        const comp = d.comprobaciones || [];
+        if (comp.length > 0) {
+          $('comprobaciones').innerHTML = comp
+            .map((c) => {
+              const e = c.nivel === 'ok' ? 'ok' : c.nivel === 'error' ? 'mal' : c.nivel === 'aviso' ? 'aviso' : 'off';
+              const resto = c.nivel === 'ok' ? '' : `<span class="v">${esc(c.detalle)} <b>${esc(c.arreglo)}</b></span>`;
+              return `<div class="fila"><i class="punto" data-e="${e}"></i><span class="k">${esc(c.titulo)}</span>${resto}</div>`;
+            })
+            .join('');
+          // Se abre sola la primera vez que hay algo que arreglar; luego el jugador la cierra si quiere.
+          if (!window.__compAbierta && comp.some((c) => c.nivel === 'error' || c.nivel === 'aviso')) {
+            window.__compAbierta = true;
+            $('cajaComprobaciones').open = true;
+          }
+        }
         const env = Object.entries(d.diag.enviados);
         $('paquetes').innerHTML = env.length
           ? env.map(([k, n]) => `<span class="chip">${esc(k)} <b>${n}</b></span>`).join('')
@@ -665,6 +689,29 @@
         } catch {
           /* se está cerrando */
         }
+      });
+      $('reconecta').addEventListener('click', async () => {
+        $('reconecta').disabled = true;
+        try {
+          const hecho = await window.jugadorAPI.reconectaTodo();
+          avisa('Reconnecting: ' + (hecho || []).join('; ') + '.');
+        } catch {
+          avisa('Could not reconnect. Close Easy HUD from the tray icon and open it again.');
+        }
+        setTimeout(() => ($('reconecta').disabled = false), 3000);
+        lee();
+      });
+      $('compruebaYa').addEventListener('click', async () => {
+        $('compruebaYa').disabled = true;
+        $('compruebaYa').textContent = 'Checking…';
+        try {
+          await window.jugadorAPI.comprobaciones();
+        } catch {
+          avisa('The check could not run.');
+        }
+        $('compruebaYa').disabled = false;
+        $('compruebaYa').textContent = 'Check my setup now';
+        lee();
       });
       $('prueba').addEventListener('click', async () => {
         $('prueba').disabled = true;

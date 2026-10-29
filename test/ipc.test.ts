@@ -103,6 +103,10 @@ test('invocaciones → su canal; llamaJugadores(null) manda lista vacía', async
   assert.deepEqual(ultima(), { tipo: 'invoke', canal: CANALES.llamaJugadores, args: [['a', 'b']] });
   await api.llamaJugadores(null);
   assert.deepEqual(ultima(), { tipo: 'invoke', canal: CANALES.llamaJugadores, args: [[]] });
+  // «Reconnect everything» del panel: una invocación sin argumentos al canal acordado.
+  await api.reconectaTodo();
+  assert.deepEqual(ultima(), { tipo: 'invoke', canal: CANALES.reconectaTodo, args: [] });
+  assert.equal(CANALES.reconectaTodo, 'reconecta-todo');
 
   for (const [pre, col] of [
     ['Teams', 'teams'],

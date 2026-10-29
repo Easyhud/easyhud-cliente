@@ -17,6 +17,7 @@
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import type { Proceso } from './procesos.ts';
 
 const FICHA = 'instancia.json';
 const ACUSE = 'instancia-acuse';
@@ -41,6 +42,18 @@ export function leeFicha(carpeta: string): Ficha | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * ¿El PID de la ficha sigue siendo Easy HUD? La ficha puede ser de un cierre brusco de hace días y Windows
+ * reutiliza los PID: sin esta comprobación se ofrecería cerrar «el proceso 1234» que ahora es otro
+ * programa cualquiera. Vale si ese proceso existe y su ejecutable es el de este programa o se llama como él.
+ */
+export function fichaEsDeEasyHud(lista: Proceso[], pid: number, ejecutable: string): boolean {
+  const p = lista.find((x) => x.pid === pid);
+  if (p === undefined || p.ruta === '') return false;
+  const nombre = (r: string) => (r.split(/[\\/]/).pop() ?? '').toLowerCase();
+  return nombre(p.ruta) === nombre(ejecutable) || /easy ?hud|ow-electron|spectra/i.test(p.ruta);
 }
 
 /** La primera instancia confirma que recibió el aviso de la segunda. */

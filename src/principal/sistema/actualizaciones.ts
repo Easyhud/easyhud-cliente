@@ -33,6 +33,9 @@ export type Veredicto =
 /** La decisión a partir de la respuesta de GitHub (función pura, probada). */
 export function evalua(estado: number, cuerpo: unknown, actual: string): Veredicto {
   if (estado === 404) return { tipo: 'silencio', motivo: 'repositorio de releases no accesible (404)' };
+  // GitHub limita las consultas sin cuenta por IP (403/429: pasa en redes compartidas de un torneo) y a veces cae
+  // (502-504): no es un problema del operador y no merece un diálogo en medio del montaje.
+  if ([403, 429, 502, 503, 504].includes(estado)) return { tipo: 'silencio', motivo: `GitHub no puede responder ahora (${estado})` };
   if (estado !== 200) return { tipo: 'fallo', motivo: `GitHub respondió ${estado}` };
   const primera: unknown = Array.isArray(cuerpo) ? cuerpo[0] : undefined;
   if (primera === undefined) return { tipo: 'silencio', motivo: 'sin releases publicadas' };
@@ -56,6 +59,8 @@ export async function compruebaActualizacion(actual: string): Promise<Veredicto>
     const cuerpo: unknown = r.status === 200 ? await r.json() : null;
     return evalua(r.status, cuerpo, actual);
   } catch (e) {
-    return { tipo: 'fallo', motivo: e instanceof Error ? e.message : String(e) };
+    // Sin red (primer arranque sin internet, VPN, DNS, tiempo agotado): no hay nada que el operador pueda arreglar
+    // aquí, y el servidor y la red ya se comprueban aparte. Antes salía un diálogo «falló la comprobación» cada vez.
+    return { tipo: 'silencio', motivo: `sin respuesta de GitHub (${e instanceof Error ? e.message : String(e)})` };
   }
 }

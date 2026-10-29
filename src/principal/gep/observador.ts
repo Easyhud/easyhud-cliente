@@ -16,13 +16,19 @@
  *     de mapa) o volver al menú se olvidan, para que la reconexión automática de
  *     después no reenvíe el mapa y el modo de la que ya terminó;
  *   · el filtro de «estado viejo» (ver `esEstadoViejo`) sólo vale para la ráfaga
- *     inicial tras detectar el juego.
+ *     inicial tras detectar el juego;
+ *   · `map`, `game_mode` y `match_id` que llegan en esa ráfaga (con la escena en el menú) son de la
+ *     partida anterior: no se mandan ni se recuerdan. Se RETIENEN aparte y sólo pasan a ser los
+ *     vigentes cuando llega una señal viva (escena de selección o de mapa, `match_start`, una fase
+ *     de ronda): si GEP no los repite para la partida nueva (mismo mapa y modo) no se pierden, y si
+ *     esa señal no llega nunca, nunca se reenvían al autenticar.
  */
 
 import type { Accion, DatoGep, FinDeMapa } from './acciones.ts';
 import {
   analiza,
   codigoMapa,
+  esEquipoObservador,
   killfeed,
   marcador,
   marcadorVacio,
@@ -91,6 +97,8 @@ export class TraductorObservador {
   private inicioRafaga: number | null = null;
   /** La última fase de ronda que se ignoró por vieja: una distinta es una señal viva. */
   private faseVieja: string | null = null;
+  /** Mapa, modo y matchId de la ráfaga vieja: apartados hasta que llegue una señal viva (ver cabecera). */
+  private retenido: { mapa?: string; modo?: string; custom?: boolean; matchId?: string } = {};
 
   constructor(opciones: OpcionesObservador = {}) {
     this.rangoEnCache = opciones.rangoEnCache ?? (() => undefined);
@@ -168,6 +176,21 @@ export class TraductorObservador {
     return [{ tipo: 'log', texto: `filtro de estado viejo desactivado: ${motivo}` }];
   }
 
+  private retiene(key: string, value: unknown): void {
+    if (value === null || value === undefined) return;
+    if (key === 'map') {
+      if (value !== '') this.retenido.mapa = codigoMapa(String(value));
+    } else if (key === 'match_id') {
+      this.retenido.matchId = String(value);
+    } else {
+      const g = analiza(value);
+      if (g && g.mode !== undefined && g.mode !== null && String(g.mode) !== '') {
+        this.retenido.modo = String(g.mode);
+        this.retenido.custom = g.custom === true || g.custom === 'true';
+      }
+    }
+  }
+
   private readonly viejosAnotados = new Set<string>();
   private ignoraViejo(key: string): Accion[] {
     if (this.viejosAnotados.has(key)) return [];
@@ -178,10 +201,34 @@ export class TraductorObservador {
   info(dato: DatoGep): Accion[] {
     const aviso = this.revisaFiltro('info', dato);
     const acciones = this.infoFiltrada(dato);
-    return aviso.length > 0 ? [...aviso, ...acciones] : acciones;
+    // Una fase de ronda aceptada (sin escena que la anunciara) también es señal de partida real.
+    const promovidos = dato.key === 'round_phase' && !this.esEstadoViejo() ? this.promueveRetenido() : [];
+    return aviso.length + promovidos.length > 0 ? [...aviso, ...promovidos, ...acciones] : acciones;
+  }
+
+  /** Lo retenido de la ráfaga vieja pasa a ser lo vigente (sólo donde aún no hay un dato más nuevo). */
+  private promueveRetenido(): Accion[] {
+    const r = this.retenido;
+    this.retenido = {};
+    const acciones: Accion[] = [];
+    if (r.mapa !== undefined && this.mapa === '') {
+      this.mapa = r.mapa;
+      acciones.push({ tipo: 'envia', type: 'map', data: this.mapa });
+    }
+    if (r.modo !== undefined && this.modo === '') {
+      this.modo = r.modo;
+      this.custom = r.custom === true;
+      acciones.push({ tipo: 'envia', type: 'game_mode', data: this.modo });
+    }
+    if (r.matchId !== undefined && this.matchId === '') this.matchId = r.matchId;
+    return acciones;
   }
 
   private infoFiltrada({ key, value }: DatoGep): Accion[] {
+    if (this.esEstadoViejo() && (key === 'map' || key === 'game_mode' || key === 'match_id')) {
+      this.retiene(key, value);
+      return this.ignoraViejo(key);
+    }
     if (
       this.esEstadoViejo() &&
       (key === 'round_phase' || key === 'round_number' || key === 'match_score' || key.includes('scoreboard') || key.includes('roster'))
@@ -215,13 +262,14 @@ export class TraductorObservador {
         return [{ tipo: 'envia', type: 'score', data: g }];
       }
       case 'team':
-        if (value === 'observer') this.esObservador = true;
+        if (esEquipoObservador(value)) this.esObservador = true;
         return [];
       case 'scene':
         return this.cambiaEscena(value);
       case 'game_mode': {
         const g = analiza(value);
-        if (!g || g.mode === undefined || g.mode === null) return [];
+        // Sin modo (o vacío) no hay nada que mandar: el original lo ignoraba igual (gepService.ts, `!modeInfo.mode`).
+        if (!g || g.mode === undefined || g.mode === null || String(g.mode) === '') return [];
         this.modo = String(g.mode);
         this.custom = g.custom === true || g.custom === 'true';
         return [{ tipo: 'envia', type: 'game_mode', data: this.modo }];
@@ -323,7 +371,7 @@ export class TraductorObservador {
     this.escena = String(value);
     switch (this.escena) {
       case 'CharacterSelectPersistentLevel':
-        return [{ tipo: 'conecta' }, { tipo: 'estadoJuego', mensaje: 'Agent Select', clase: 'success' }];
+        return [...this.promueveRetenido(), { tipo: 'conecta' }, { tipo: 'estadoJuego', mensaje: 'Agent Select', clase: 'success' }];
       case 'MainMenu':
         this.viejosAnotados.clear();
         this.esObservador = false;
@@ -336,12 +384,14 @@ export class TraductorObservador {
       case 'Range':
         return [{ tipo: 'estadoJuego', mensaje: 'Practice Range', clase: 'info' }];
       default:
-        return [];
+        // La escena del mapa: señal viva de que hay partida.
+        return this.promueveRetenido();
     }
   }
 
   /** Se olvida lo que `alAutenticar` reenviaría de la partida que acaba de terminar. */
   private olvidaPartida(): void {
+    this.retenido = {};
     this.mapa = '';
     this.modo = '';
     this.custom = false;
@@ -404,13 +454,16 @@ export class TraductorObservador {
   private eventoFiltrado({ key }: DatoGep): Accion[] {
     if ((key === 'match_start' || key === 'match_end') && this.esEstadoViejo()) return this.ignoraViejo(key);
     switch (key) {
-      case 'match_start':
+      case 'match_start': {
+        const promovidos = this.promueveRetenido();
         this.partidaEnCurso = true;
         return [
+          ...promovidos,
           { tipo: 'envia', type: 'match_start', data: this.matchId },
           { tipo: 'estadoJuego', mensaje: 'Game Started', clase: 'success' },
           { tipo: 'persisteSecreto' },
         ];
+      }
       case 'spike_planted':
       case 'spike_detonated':
       case 'spike_defused':

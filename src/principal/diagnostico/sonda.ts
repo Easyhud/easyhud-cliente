@@ -78,3 +78,58 @@ export function sondea(url: string, tiempoMs = 4000): Promise<ResultadoSonda> {
     }
   });
 }
+
+export interface EstadoServidor extends ResultadoSonda {
+  /** La versión que dice tener el servidor (`''` si no la dijo). */
+  version: string;
+}
+
+/** Lee la versión del cuerpo JSON de `/status` (`{status, version}`); `''` si no es lo esperado. */
+export function versionDeEstado(cuerpo: string): string {
+  try {
+    const v: unknown = JSON.parse(cuerpo);
+    const ver = typeof v === 'object' && v !== null ? (v as { version?: unknown }).version : undefined;
+    return typeof ver === 'string' ? ver.slice(0, 40) : '';
+  } catch {
+    return '';
+  }
+}
+
+/** Como `sondea`, pero además devuelve la versión del servidor (para comprobar que casa con la del programa). */
+export function sondeaConVersion(url: string, tiempoMs = 4000): Promise<EstadoServidor> {
+  return new Promise((resolve) => {
+    let hecho = false;
+    const fin = (r: EstadoServidor) => {
+      if (hecho) return;
+      hecho = true;
+      resolve(r);
+    };
+    try {
+      const pide = url.startsWith('https:') ? httpsRequest : httpRequest;
+      const req = pide(url, { method: 'GET', timeout: tiempoMs, rejectUnauthorized: false } as never, (res) => {
+        const partes: Buffer[] = [];
+        let tam = 0;
+        res.on('data', (d: Buffer) => {
+          tam += d.length;
+          if (tam <= 16 * 1024) partes.push(d);
+        });
+        res.on('end', () => {
+          const bien = res.statusCode !== undefined && res.statusCode >= 200 && res.statusCode < 400;
+          fin(
+            bien
+              ? { ok: true, motivo: '', version: versionDeEstado(Buffer.concat(partes).toString('utf8')) }
+              : { ok: false, motivo: `the server answered HTTP ${res.statusCode}`, version: '' },
+          );
+        });
+        res.on('error', (e) => fin({ ok: false, motivo: motivoDeError(e), version: '' }));
+      });
+      req.on('timeout', () => {
+        req.destroy(Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' }));
+      });
+      req.on('error', (e) => fin({ ok: false, motivo: motivoDeError(e), version: '' }));
+      req.end();
+    } catch (e) {
+      fin({ ok: false, motivo: motivoDeError(e), version: '' });
+    }
+  });
+}

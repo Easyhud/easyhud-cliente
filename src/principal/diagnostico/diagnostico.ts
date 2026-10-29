@@ -11,6 +11,8 @@
  * `alertas()` y `texto()`. El reloj se inyecta para probarlo.
  */
 
+import type { Comprobacion } from '../sistema/arranque.ts';
+
 export type EstadoGep = 'esperando' | 'listo' | 'caido' | 'sin-api';
 export type EstadoDatos = 'cerrada' | 'conectando' | 'conectada';
 
@@ -67,6 +69,9 @@ export interface Alerta {
 
 const MAX_ERRORES = 6;
 
+/** Las comprobaciones de arranque que no tienen alerta propia en `alertas()`. */
+const ALERTAS_DE_ARRANQUE = new Set<string>(['orden', 'admin', 'version', 'eventos', 'temporal']);
+
 export class Diagnostico {
   private readonly version: string;
   private readonly ahora: () => number;
@@ -90,6 +95,7 @@ export class Diagnostico {
   private cam = { permitida: false, publicando: false, error: '' };
   private readonly enviados: Record<string, number> = {};
   private readonly errores: string[] = [];
+  private comprobaciones: Comprobacion[] = [];
 
   constructor(version: string, ahora: () => number = Date.now) {
     this.version = version;
@@ -151,6 +157,11 @@ export class Diagnostico {
   fijaRiot(texto: string, tienePuuid?: boolean): void {
     this.estadoRiot = texto.slice(0, 160);
     if (tienePuuid !== undefined) this.tieneRiotId = tienePuuid;
+  }
+
+  /** El último resultado de las comprobaciones de arranque (`sistema/arranque.ts`). */
+  fijaComprobaciones(lista: Comprobacion[]): void {
+    this.comprobaciones = lista;
   }
 
   fijaCamara(c: { permitida: boolean; publicando: boolean; error: string }): void {
@@ -288,6 +299,13 @@ export class Diagnostico {
 
     if (this.cam.error !== '') {
       alertas.push({ id: 'camara', nivel: 'aviso', titulo: 'Camera problem', detalle: this.cam.error });
+    }
+
+    // Lo que sólo ven las comprobaciones de arranque (orden de apertura, permisos, versión, eventos de
+    // Overwolf, carpeta temporal). El resto ya tiene su alerta propia arriba y no se duplica.
+    for (const c of this.comprobaciones) {
+      if (!ALERTAS_DE_ARRANQUE.has(c.id) || (c.nivel !== 'aviso' && c.nivel !== 'error')) continue;
+      alertas.push({ id: `arranque-${c.id}`, nivel: c.nivel === 'error' ? 'error' : 'aviso', titulo: c.titulo, detalle: `${c.detalle} ${c.arreglo}` });
     }
 
     return alertas.sort((a, b) => (a.nivel === b.nivel ? 0 : a.nivel === 'error' ? -1 : 1));

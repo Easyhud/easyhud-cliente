@@ -117,7 +117,8 @@ test('ready perdido falso (features rechazadas): no es "versión incompatible", 
   g.instancia = new GepFalso();
   g.instancia.falla = true;
   const { r, rec } = receptor();
-  const e = vigilaPaquetes(comoGestor(g), rec, { esperaListoMs: 20 });
+  // Sin reintentos (el comportamiento con reintentos se prueba en copia-funcional.test.ts).
+  const e = vigilaPaquetes(comoGestor(g), rec, { esperaListoMs: 20, reintentosFeatures: 1 });
   await espera(60);
   assert.equal(r.incompatibles, 0);
   assert.deepEqual(r.listos, []);

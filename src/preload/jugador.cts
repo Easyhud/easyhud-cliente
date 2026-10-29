@@ -24,4 +24,6 @@ contextBridge.exposeInMainWorld('jugadorAPI', {
   guardaInforme: () => ipcRenderer.invoke('jugador-informe-guardar'),
   permiteFirewall: () => ipcRenderer.invoke('jugador-firewall'),
   ajustesCamara: () => ipcRenderer.invoke('jugador-ajustes-camara'),
+  reconectaTodo: () => ipcRenderer.invoke('jugador-reconecta'),
+  comprobaciones: () => ipcRenderer.invoke('jugador-comprobaciones'),
 });

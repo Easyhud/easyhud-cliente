@@ -44,8 +44,30 @@ export function marcadorVacio(valor: unknown): boolean {
   return valor === null || valor === undefined || valor === 'open' || valor === 'closed' || valor === 'close';
 }
 
+/**
+ * El spike llega como booleano en unas versiones de GEP y como texto (`TX_Hud_Bomb_S` = lo lleva) en otras; un
+ * `'true'` en texto también cuenta como «lo lleva».
+ * Adaptado de ValoSpectra/Spectra-Client (GPL-3.0) — services/formattingService.ts (formatScoreboardData)
+ */
 function tieneSpike(spike: unknown): boolean {
-  return typeof spike === 'boolean' ? spike : spike === 'TX_Hud_Bomb_S';
+  if (typeof spike === 'boolean') return spike;
+  return spike === 'TX_Hud_Bomb_S' || spike === 'true';
+}
+
+/**
+ * Los booleanos de GEP a veces llegan como texto (`"false"` es un texto no vacío, o sea «verdadero» para quien lo
+ * lea sin cuidado: un jugador muerto saldría vivo). Aquí `'true'`/`'false'` pasan a booleano; todo lo demás se
+ * entrega tal cual (ausente sigue ausente).
+ */
+export function booleano(v: unknown): unknown {
+  if (v === 'true') return true;
+  if (v === 'false') return false;
+  return v;
+}
+
+/** `team: observer` (GEP lo escribe así; se admite cualquier combinación de mayúsculas). */
+export function esEquipoObservador(v: unknown): boolean {
+  return typeof v === 'string' && v.trim().toLowerCase() === 'observer';
 }
 
 /** Tabla D: la parte del marcador que no depende del nombre ni del equipo. */
@@ -53,9 +75,10 @@ export function marcadorCompanero(g: Crudo) {
   return {
     playerId: g.player_id,
     agentInternal: g.character,
-    isAlive: g.alive,
-    // `armor` en GEP reciente, `shield` en versiones viejas.
-    initialArmor: 'armor' in g ? g.armor : g.shield,
+    isAlive: booleano(g.alive),
+    // `armor` en GEP reciente, `shield` en versiones viejas; un `armor` nulo cuenta como ausente.
+    // Adaptado de ValoSpectra/Spectra-Client (GPL-3.0) — services/formattingService.ts
+    initialArmor: g.armor !== undefined && g.armor !== null ? g.armor : g.shield,
     scoreboardWeaponInternal: g.weapon,
     currUltPoints: g.ult_points,
     maxUltPoints: g.ult_max,
@@ -87,7 +110,7 @@ export function roster(g: Crudo, clave: string) {
     agentInternal: g.character,
     playerId: g.player_id,
     position: Number.isFinite(posicion) ? posicion : 0,
-    locked: g.locked,
+    locked: booleano(g.locked),
     rank: g.rank,
   };
 }
@@ -103,9 +126,9 @@ export function killfeed(g: Crudo) {
     attacker: g.attacker,
     victim: g.victim,
     weaponKillfeedInternal: g.weapon,
-    headshotKill: g.headshot,
+    headshotKill: booleano(g.headshot),
     assists: asistencias,
-    isTeamkill: g.is_victim_teammate,
+    isTeamkill: booleano(g.is_victim_teammate),
   };
 }
 

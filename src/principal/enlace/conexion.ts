@@ -30,7 +30,7 @@
 import { inspect } from 'node:util';
 import { io, type ManagerOptions, type Socket, type SocketOptions } from 'socket.io-client';
 import type { ClaseEstado } from '../gep/acciones.ts';
-import { leeCarga, logonJugador, logonObservador, motivoAmable, nombreDelToken } from './mensajes.ts';
+import { leeCarga, logonJugador, logonObservador, motivoAmable, motivoDeFalloDeRed, nombreDelToken } from './mensajes.ts';
 
 export type Intencion =
   | { rol: 'observador'; token: string; grupo: string }
@@ -337,7 +337,11 @@ export class EnlaceIngesta {
     this.cierraSocket(true);
     if (inalcanzable) {
       this.avisos.estado('Server Unreachable', 'danger');
-      this.avisos.dialogo('Easy HUD - Error', 'Easy HUD server not reachable!', 'error');
+      this.avisos.dialogo(
+        'Easy HUD - Server not reachable',
+        'The Easy HUD server closed the connection and is not accepting new ones (it may be restarting). Press Ctrl+Alt+R (Reconnect everything) in a minute; if it still fails, tell the organizer.',
+        'error',
+      );
     } else {
       this.avisos.estado('Connection Closed', 'info');
     }
@@ -346,16 +350,17 @@ export class EnlaceIngesta {
   private alFallarConexion(s: Socket, e: Error): void {
     if (this.socket !== s) return;
     this.avisos.log(`fallo de conexión: ${e.message}`);
+    const causa = motivoDeFalloDeRed(inspect(e, { depth: 5 }));
     if (esRechazo(e)) {
       this.inalcanzable = true;
       this.avisos.estado('Server Unreachable', 'danger');
-      // Un solo diálogo por intento de conexión, y sólo si nunca llegó a conectar.
-      if (!this.yaConecto && !this.avisadoInalcanzable && this.intencion?.rol === 'observador') {
-        this.avisadoInalcanzable = true;
-        this.avisos.dialogo('Easy HUD - Error', 'Easy HUD server not reachable!', 'error');
-      }
     } else {
       this.avisos.estado(this.intencion?.rol === 'observador' ? 'Connection Closed' : 'Connection Failed', 'danger');
+    }
+    // Un solo diálogo por intento de conexión, y sólo si nunca llegó a conectar: qué pasó y qué hacer.
+    if (causa !== null && !this.yaConecto && !this.avisadoInalcanzable && this.intencion?.rol === 'observador') {
+      this.avisadoInalcanzable = true;
+      this.avisos.dialogo(`Easy HUD - ${causa.titulo}`, causa.texto, 'error');
     }
     if (!s.active) {
       // Rechazo en el apretón de manos del servidor: socket.io no reintenta.

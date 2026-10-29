@@ -143,7 +143,8 @@ export function montaTodo({ version, origen, salida = join(PROYECTO, 'app'), emp
   for (const [de, a] of piezas) {
     const ruta = join(origen, de);
     if (!existsSync(ruta)) falla(`falta ${de} en el overlay (${origen})`);
-    cpSync(ruta, join(renderer, a), { recursive: true });
+    // Sin pruebas, documentación ni herramientas dentro del programa (las pruebas del panel importan "node:test").
+    cpSync(ruta, join(renderer, a), { recursive: true, filter: (r) => copiable(origen, r) });
   }
   const jugador = join(PROYECTO, 'recursos', 'jugador.html');
   if (!existsSync(jugador)) falla('falta recursos/jugador.html');
